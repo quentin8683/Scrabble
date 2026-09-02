@@ -4,7 +4,7 @@ import os
 
 # Importez votre moteur de jeu
 # Si vous avez renommé game.py en game_engine.py
-try:
+
 from game_engine import ScrabbleGame as GameEngine
 
 app = Flask(__name__)
