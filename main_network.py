@@ -65,3 +65,23 @@ class ScrabbleClient:
             json={"player_index": self.player_index}
         )
         return response.json()
+
+# ============================================================
+# EXEMPLE D'UTILISATION
+# ============================================================
+
+if __name__ == "__main__":
+    # URL de votre serveur Render
+    SERVER_URL = "https://scrabble-ml89.onrender.com"
+    
+    client = ScrabbleClient(SERVER_URL)
+    
+    # Exemple : rejoindre la partie
+    name = input("Entrez votre nom : ")
+    result = client.join(name)
+    print("Résultat :", result)
+    
+    # Exemple : voir l'état du jeu
+    if client.player_index is not None:
+        state = client.get_state()
+        print("État du jeu :", state)
