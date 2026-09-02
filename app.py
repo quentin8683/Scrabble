@@ -5,10 +5,7 @@ import os
 # Importez votre moteur de jeu
 # Si vous avez renommé game.py en game_engine.py
 try:
-    from game_engine import GameEngine
-except ImportError:
-    # Si vous avez gardé game.py
-    from game import GameEngine
+from game_engine import ScrabbleGame as GameEngine
 
 app = Flask(__name__)
 CORS(app)  # Permet aux clients de se connecter depuis n'importe où
