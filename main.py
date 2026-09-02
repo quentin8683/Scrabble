@@ -504,6 +504,44 @@ tk.Button(
             name
         )
 
+def connect_to_render(self):
+    """Se connecte au serveur Render en ligne"""
+    name = self.get_name()
+    render_url = "https://scrabble-ml89.onrender.com"
+    
+    try:
+        # Créer le client
+        client = ScrabbleClient(render_url)
+        
+        # Rejoindre la partie
+        result = client.join(name)
+        
+        if 'error' in result:
+            messagebox.showerror(
+                "Connexion",
+                f"Erreur : {result['error']}"
+            )
+            return
+        
+        # Détruire l'écran de démarrage
+        self.frame.destroy()
+        
+        # Lancer le jeu (vous devrez adapter NetworkGame)
+        from network_game import NetworkGame
+        NetworkGame(
+            self.root,
+            render_url,  # Au lieu de host
+            443,         # Port HTTPS
+            name,
+            client=client  # Passer le client
+        )
+        
+    except Exception as error:
+        messagebox.showerror(
+            "Connexion",
+            f"Impossible de se connecter :\n\n{error}"
+        )
+        
     # =========================================================
     # LANCER LE CLIENT
     # =========================================================
