@@ -1,6 +1,3 @@
-import tkinter as tk
-from tkinter import messagebox, simpledialog
-
 from board import Board, BOARD_SIZE
 from player import Player
 from tiles import TileBag, TILE_VALUES
