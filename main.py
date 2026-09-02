@@ -333,6 +333,27 @@ class StartScreen:
             pady=20
         )
 
+    # -----------------------------------------------------
+# SE CONNECTER À RENDER (NOUVEAU)
+# -----------------------------------------------------
+
+tk.Button(
+    self.frame,
+    text="☁️  SERVEUR EN LIGNE (RENDER)",
+    font=("Arial", 14, "bold"),
+    bg="#8b5cf6",  # Violet
+    fg="white",
+    activebackground="#7c3aed",
+    activeforeground="white",
+    padx=20,
+    pady=12,
+    command=self.connect_to_render
+).pack(
+    fill="x",
+    padx=90,
+    pady=(20, 10)
+)
+
     # =========================================================
     # NOM
     # =========================================================
