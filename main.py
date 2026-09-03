@@ -26,24 +26,24 @@ class ScrabbleClient:
             if 'headers' not in kwargs:
                 kwargs['headers'] = {}
             kwargs['headers']['Content-Type'] = 'application/json'
-            
+
             response = requests.request(method, url, verify=False, timeout=60, **kwargs)
-            
+
             if response.status_code != 200:
                 return {"error": f"HTTP {response.status_code}"}
-            
+
             content = response.text.strip()
             if not content:
                 return {"error": "Réponse vide"}
-            
+
             if not content.startswith(('{', '[')):
                 return {
                     "error": f"Réponse inattendue (non-JSON)",
                     "raw": content[:200]
                 }
-            
+
             return response.json()
-            
+
         except requests.exceptions.Timeout:
             return {"error": "Délai d'attente dépassé (60s)"}
         except requests.exceptions.ConnectionError:
@@ -52,6 +52,10 @@ class ScrabbleClient:
             return {"error": f"Erreur de décodage JSON : {str(e)}"}
         except Exception as e:
             return {"error": str(e)}
+
+    def get_status(self):
+        """Consulte l'état du serveur sans être connecté (avant /join)"""
+        return self._safe_request('GET', '/status')
 
     def join(self, name, max_players):
         result = self._safe_request('POST', '/join', json={
@@ -123,22 +127,22 @@ class WaitingScreen:
         self.name = name
         self.max_players = max_players
         self.running = True
-        
+
         self.root.title("Scrabble - En attente")
         self.root.geometry("500x450")
         self.root.resizable(False, False)
         self.root.configure(bg="#1f2937")
-        
+
         self.frame = tk.Frame(self.root, bg="#1f2937")
         self.frame.pack(fill="both", expand=True)
-        
+
         tk.Label(
             self.frame,
             text="⏳",
             font=("Arial", 48),
             bg="#1f2937"
         ).pack(pady=(40, 10))
-        
+
         tk.Label(
             self.frame,
             text="En attente des joueurs...",
@@ -146,7 +150,7 @@ class WaitingScreen:
             fg="white",
             bg="#1f2937"
         ).pack()
-        
+
         self.info_label = tk.Label(
             self.frame,
             text=f"Connecté : {name} (joueur {client.player_index + 1}/{max_players})",
@@ -155,7 +159,7 @@ class WaitingScreen:
             bg="#1f2937"
         )
         self.info_label.pack(pady=10)
-        
+
         self.status_label = tk.Label(
             self.frame,
             text=f"En attente de {max_players - 1} autre(s) joueur(s)...",
@@ -164,7 +168,7 @@ class WaitingScreen:
             bg="#1f2937"
         )
         self.status_label.pack(pady=5)
-        
+
         tk.Button(
             self.frame,
             text="🔄 Vérifier l'état",
@@ -177,7 +181,7 @@ class WaitingScreen:
             pady=8,
             command=self.check_state
         ).pack(pady=20)
-        
+
         self.check_state()
         self.auto_check()
 
@@ -190,17 +194,17 @@ class WaitingScreen:
     def check_state(self):
         try:
             state = self.client.get_state()
-            
+
             if 'error' in state:
                 self.status_label.config(
                     text=f"⚠️ {state['error'][:50]}",
                     fg="#ef4444"
                 )
                 return
-            
+
             players = state.get('players', [])
             count = len(players)
-            
+
             if state.get('game_started', False):
                 self.running = False
                 self.status_label.config(
@@ -209,7 +213,7 @@ class WaitingScreen:
                 )
                 self.root.after(500, self.start_game)
                 return
-            
+
             if count >= self.max_players:
                 self.status_label.config(
                     text=f"🟢 {count}/{self.max_players} joueurs - La partie va commencer !",
@@ -222,7 +226,7 @@ class WaitingScreen:
                     text=f"🟡 {count}/{self.max_players} joueurs connectés - En attente...",
                     fg="#fcd34d"
                 )
-                
+
         except Exception as e:
             self.status_label.config(
                 text=f"⚠️ Erreur : {str(e)[:40]}",
@@ -253,7 +257,7 @@ class RenderConnector:
         self.root.geometry("420x380")
         self.root.resizable(False, False)
         self.root.configure(bg="#1f2937")
-        
+
         # Titre
         tk.Label(
             self.root,
@@ -262,7 +266,7 @@ class RenderConnector:
             fg="white",
             bg="#1f2937"
         ).pack(pady=(20, 5))
-        
+
         tk.Label(
             self.root,
             text="Scrabble en ligne",
@@ -270,7 +274,7 @@ class RenderConnector:
             fg="#9ca3af",
             bg="#1f2937"
         ).pack(pady=(0, 15))
-        
+
         # Nom
         tk.Label(
             self.root,
@@ -279,7 +283,7 @@ class RenderConnector:
             fg="white",
             bg="#1f2937"
         ).pack()
-        
+
         self.name_entry = tk.Entry(
             self.root,
             font=("Arial", 14),
@@ -288,7 +292,7 @@ class RenderConnector:
         )
         self.name_entry.insert(0, "Joueur")
         self.name_entry.pack(pady=5)
-        
+
         # Nombre de joueurs
         tk.Label(
             self.root,
@@ -297,12 +301,115 @@ class RenderConnector:
             fg="white",
             bg="#1f2937"
         ).pack(pady=(15, 5))
-        
+
         self.max_players_var = tk.StringVar(value="2")
-        
-        frame_players = tk.Frame(self.root, bg="#1f2937")
-        frame_players.pack(pady=5)
-        
+        self.game_already_configured = False
+
+        # Zone dynamique : contiendra soit les boutons radio, soit un message fixe
+        self.players_zone = tk.Frame(self.root, bg="#1f2937")
+        self.players_zone.pack(pady=5)
+
+        self.checking_label = tk.Label(
+            self.players_zone,
+            text="🔄 Vérification du serveur...",
+            font=("Arial", 11, "italic"),
+            fg="#9ca3af",
+            bg="#1f2937"
+        )
+        self.checking_label.pack()
+
+        self.connect_button = tk.Button(
+            self.root,
+            text="🔗 SE CONNECTER",
+            font=("Arial", 14, "bold"),
+            bg="#8b5cf6",
+            fg="white",
+            activebackground="#7c3aed",
+            activeforeground="white",
+            padx=30,
+            pady=10,
+            state="disabled",
+            command=self.connect
+        )
+        self.connect_button.pack(pady=20)
+
+        # Status
+        self.status_label = tk.Label(
+            self.root,
+            text="Prêt à se connecter",
+            font=("Arial", 10),
+            fg="#6b7280",
+            bg="#1f2937"
+        )
+        self.status_label.pack()
+
+        # Vérification de l'état du serveur en arrière-plan
+        # (évite de geler la fenêtre pendant le réveil de Render, ~30-50s)
+        self._render_url = "https://scrabble-ml89.onrender.com"
+        threading.Thread(target=self._check_server_state, daemon=True).start()
+
+    def _check_server_state(self):
+        """Exécuté dans un thread séparé : consulte /status sans bloquer l'UI."""
+        client = ScrabbleClient(self._render_url)
+        result = client.get_status()
+        # On revient sur le thread principal Tkinter pour manipuler les widgets
+        self.root.after(0, lambda: self._apply_server_state(result))
+
+    def _apply_server_state(self, result):
+        # Nettoyer la zone dynamique (retire le "Vérification...")
+        for widget in self.players_zone.winfo_children():
+            widget.destroy()
+
+        if 'error' in result:
+            # Serveur injoignable / en train de se réveiller : on retombe
+            # sur le comportement par défaut (sélecteur libre)
+            self._show_player_selector()
+            self.status_label.config(
+                text="⚠️ Serveur injoignable, choix libre du nombre de joueurs",
+                fg="#fcd34d"
+            )
+            self.connect_button.config(state="normal")
+            return
+
+        configured = result.get('configured', False)
+        players_count = result.get('players_count', 0)
+        max_players = result.get('max_players', 4)
+        game_started = result.get('game_started', False)
+
+        if game_started:
+            tk.Label(
+                self.players_zone,
+                text="🔴 Une partie est déjà en cours sur ce serveur.",
+                font=("Arial", 11),
+                fg="#ef4444",
+                bg="#1f2937",
+                wraplength=350
+            ).pack()
+            self.connect_button.config(state="disabled")
+        elif configured:
+            # Un premier joueur a déjà fixé le nombre de joueurs :
+            # on ne propose plus le choix, on l'impose.
+            self.game_already_configured = True
+            self.max_players_var.set(str(max_players))
+            tk.Label(
+                self.players_zone,
+                text=f"🔒 Partie configurée pour {max_players} joueurs\n"
+                     f"({players_count}/{max_players} déjà connecté·s)",
+                font=("Arial", 12, "bold"),
+                fg="#4ade80",
+                bg="#1f2937",
+                justify="center"
+            ).pack()
+            self.connect_button.config(state="normal")
+        else:
+            # Aucune partie en cours : le premier joueur choisit
+            self._show_player_selector()
+            self.connect_button.config(state="normal")
+
+    def _show_player_selector(self):
+        frame_players = tk.Frame(self.players_zone, bg="#1f2937")
+        frame_players.pack()
+
         for i, value in enumerate(["2", "3", "4"]):
             tk.Radiobutton(
                 frame_players,
@@ -316,30 +423,6 @@ class RenderConnector:
                 activebackground="#1f2937",
                 activeforeground="white"
             ).grid(row=0, column=i, padx=15)
-        
-        # Bouton
-        tk.Button(
-            self.root,
-            text="🔗 SE CONNECTER",
-            font=("Arial", 14, "bold"),
-            bg="#8b5cf6",
-            fg="white",
-            activebackground="#7c3aed",
-            activeforeground="white",
-            padx=30,
-            pady=10,
-            command=self.connect
-        ).pack(pady=20)
-        
-        # Status
-        self.status_label = tk.Label(
-            self.root,
-            text="Prêt à se connecter",
-            font=("Arial", 10),
-            fg="#6b7280",
-            bg="#1f2937"
-        )
-        self.status_label.pack()
 
     def connect(self):
         name = self.name_entry.get().strip() or "Joueur"
@@ -347,16 +430,16 @@ class RenderConnector:
             max_players = int(self.max_players_var.get())
         except ValueError:
             max_players = 2
-        
-        render_url = "https://scrabble-ml89.onrender.com"
-        
+
+        render_url = self._render_url
+
         self.status_label.config(text="🔄 Connexion en cours...", fg="#fcd34d")
         self.root.update()
-        
+
         try:
             client = ScrabbleClient(render_url)
             result = client.join(name, max_players)
-            
+
             if 'error' in result:
                 self.status_label.config(
                     text=f"❌ {result['error'][:40]}...",
@@ -371,17 +454,17 @@ class RenderConnector:
                     f"• Accédez à {render_url} dans votre navigateur"
                 )
                 return
-            
+
             self.status_label.config(
                 text=f"✅ Connecté ! (joueur {client.player_index + 1}/{max_players})",
                 fg="#4ade80"
             )
-            
+
             self.root.destroy()
             waiting_root = tk.Tk()
             WaitingScreen(waiting_root, client, name, max_players)
             waiting_root.mainloop()
-            
+
         except Exception as e:
             self.status_label.config(text="❌ Erreur de connexion", fg="#ef4444")
             messagebox.showerror(
