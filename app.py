@@ -128,7 +128,7 @@ def join_game():
         # Démarrer la partie uniquement quand le nombre de joueurs voulu est atteint
         if len(players) >= target_max_players and not game_started:
             try:
-                engine = GameEngine(players)
+                engine = GameEngine(players, len(players))
                 game_started = True
                 logger.info(f"🎮 Partie démarrée avec {len(players)} joueurs : {players}")
             except Exception as e:
