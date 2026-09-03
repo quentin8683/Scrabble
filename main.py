@@ -1,604 +1,383 @@
 import tkinter as tk
 from tkinter import messagebox
-
 import requests
 import urllib3
+import threading
+import time
+import json as json_lib
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+# ============================================================
+# CLIENT HTTP POUR RENDER (CORRIGÉ)
+# ============================================================
 
 class ScrabbleClient:
     def __init__(self, server_url):
         self.server_url = server_url
         self.player_index = None
-    
+        self.game_started = False
+
+    def _safe_request(self, method, endpoint, **kwargs):
+        """Méthode sécurisée pour faire une requête HTTP"""
+        url = f"{self.server_url}{endpoint}"
+        try:
+            # Ajouter le Content-Type si ce n'est pas déjà fait
+            if 'headers' not in kwargs:
+                kwargs['headers'] = {}
+            kwargs['headers']['Content-Type'] = 'application/json'
+
+            response = requests.request(method, url, verify=False, timeout=60, **kwargs)
+
+            # Vérifier le statut
+            if response.status_code != 200:
+                return {"error": f"HTTP {response.status_code}"}
+
+            # Vérifier que c'est du JSON
+            content = response.text.strip()
+            if not content:
+                return {"error": "Réponse vide"}
+
+            if not content.startswith(('{', '[')):
+                return {
+                    "error": f"Réponse inattendue (non-JSON)",
+                    "raw": content[:200]
+                }
+
+            return response.json()
+
+        except requests.exceptions.Timeout:
+            return {"error": "Délai d'attente dépassé (60s)"}
+        except requests.exceptions.ConnectionError:
+            return {"error": "Impossible de contacter le serveur"}
+        except ValueError as e:
+            return {"error": f"Erreur de décodage JSON : {str(e)}"}
+        except Exception as e:
+            return {"error": str(e)}
+
     def join(self, name):
-        response = requests.post(
-            f"{self.server_url}/join",
-            json={"name": name},
-            verify=False
-        )
-        data = response.json()
-        if 'error' not in data:
-            self.player_index = data.get('player_index')
-        return data
-    
+        result = self._safe_request('POST', '/join', json={"name": name})
+        if 'error' not in result:
+            self.player_index = result.get('player_index')
+            self.game_started = result.get('game_started', False)
+        return result
+
     def get_state(self):
-        response = requests.get(
-            f"{self.server_url}/state",
-            params={"player_index": self.player_index},
-            verify=False
+        if self.player_index is None:
+            return {"error": "Pas de joueur connecté"}
+        return self._safe_request(
+            'GET', '/state',
+            params={"player_index": self.player_index}
         )
-        return response.json()
-    
+
     def place(self, row, col, rack_index, joker_letter=None):
-        response = requests.post(
-            f"{self.server_url}/place",
-            json={
-                "player_index": self.player_index,
-                "row": row,
-                "col": col,
-                "rack_index": rack_index,
-                "joker_letter": joker_letter
-            },
-            verify=False
-        )
-        return response.json()
-    
+        if self.player_index is None:
+            return {"error": "Pas de joueur connecté"}
+        return self._safe_request('POST', '/place', json={
+            "player_index": self.player_index,
+            "row": row,
+            "col": col,
+            "rack_index": rack_index,
+            "joker_letter": joker_letter
+        })
+
     def play(self):
-        response = requests.post(
-            f"{self.server_url}/play",
-            json={"player_index": self.player_index},
-            verify=False
-        )
-        return response.json()
-    
+        if self.player_index is None:
+            return {"error": "Pas de joueur connecté"}
+        return self._safe_request('POST', '/play', json={
+            "player_index": self.player_index
+        })
+
     def pass_turn(self):
-        response = requests.post(
-            f"{self.server_url}/pass",
-            json={"player_index": self.player_index},
-            verify=False
-        )
-        return response.json()
-    
+        if self.player_index is None:
+            return {"error": "Pas de joueur connecté"}
+        return self._safe_request('POST', '/pass', json={
+            "player_index": self.player_index
+        })
+
     def exchange(self, indices):
-        response = requests.post(
-            f"{self.server_url}/exchange",
-            json={
-                "player_index": self.player_index,
-                "indices": indices
-            },
-            verify=False
-        )
-        return response.json()
-    
+        if self.player_index is None:
+            return {"error": "Pas de joueur connecté"}
+        return self._safe_request('POST', '/exchange', json={
+            "player_index": self.player_index,
+            "indices": indices
+        })
+
     def cancel(self):
-        response = requests.post(
-            f"{self.server_url}/cancel",
-            json={"player_index": self.player_index},
-            verify=False
-        )
-        return response.json()
-        
-from network_game import NetworkGame
-from network_server import ScrabbleServer
+        if self.player_index is None:
+            return {"error": "Pas de joueur connecté"}
+        return self._safe_request('POST', '/cancel', json={
+            "player_index": self.player_index
+        })
 
 
-class StartScreen:
+# ============================================================
+# ÉCRAN D'ATTENTE POUR RENDER (CORRIGÉ)
+# ============================================================
 
-    def __init__(
-        self,
-        root
-    ):
-
+class WaitingScreen:
+    def __init__(self, root, client, name):
         self.root = root
+        self.client = client
+        self.name = name
+        self.running = True
 
-        self.root.title(
-            "Scrabble"
-        )
+        self.root.title("Scrabble - En attente")
+        self.root.geometry("500x400")
+        self.root.resizable(False, False)
+        self.root.configure(bg="#1f2937")
 
-        self.root.geometry(
-            "550x600"
-        )
+        # Interface
+        self.frame = tk.Frame(self.root, bg="#1f2937")
+        self.frame.pack(fill="both", expand=True)
 
-        self.root.resizable(
-            False,
-            False
-        )
-
-        self.root.configure(
+        # Icône d'attente
+        tk.Label(
+            self.frame,
+            text="⏳",
+            font=("Arial", 48),
             bg="#1f2937"
-        )
-
-        self.create_interface()
-
-    # =========================================================
-    # INTERFACE
-    # =========================================================
-
-    def create_interface(self):
-
-        self.frame = tk.Frame(
-            self.root,
-            bg="#1f2937"
-        )
-
-        self.frame.pack(
-            fill="both",
-            expand=True
-        )
-
-        # -----------------------------------------------------
-        # TITRE
-        # -----------------------------------------------------
+        ).pack(pady=(40, 10))
 
         tk.Label(
             self.frame,
-            text="SCRABBLE",
-            font=(
-                "Arial",
-                34,
-                "bold"
-            ),
+            text="En attente des joueurs...",
+            font=("Arial", 20, "bold"),
             fg="white",
             bg="#1f2937"
-        ).pack(
-            pady=(45, 5)
-        )
+        ).pack()
 
-        tk.Label(
+        # Informations
+        self.info_label = tk.Label(
             self.frame,
-            text="Jouez avec vos collègues",
-            font=(
-                "Arial",
-                13
-            ),
+            text=f"Connecté : {name} (joueur {client.player_index + 1})",
+            font=("Arial", 12),
             fg="#9ca3af",
             bg="#1f2937"
-        ).pack(
-            pady=(0, 30)
         )
+        self.info_label.pack(pady=10)
 
-        # -----------------------------------------------------
-        # NOM
-        # -----------------------------------------------------
-
-        tk.Label(
+        self.status_label = tk.Label(
             self.frame,
-            text="Votre nom",
-            font=(
-                "Arial",
-                14,
-                "bold"
-            ),
-            fg="white",
+            text="En attente d'un autre joueur...",
+            font=("Arial", 12),
+            fg="#fcd34d",
             bg="#1f2937"
-        ).pack(
-            pady=(5, 5)
         )
+        self.status_label.pack(pady=5)
 
-        self.name_entry = tk.Entry(
-            self.frame,
-            font=(
-                "Arial",
-                14
-            ),
-            justify="center",
-            width=25
-        )
-
-        self.name_entry.insert(
-            0,
-            "Joueur"
-        )
-
-        self.name_entry.pack(
-            pady=5
-        )
-
-        # -----------------------------------------------------
-        # CREER PARTIE
-        # -----------------------------------------------------
-
+        # Bouton pour vérifier manuellement
         tk.Button(
             self.frame,
-            text="🏠  CRÉER UNE PARTIE",
-            font=(
-                "Arial",
-                14,
-                "bold"
-            ),
-            bg="#16a34a",
-            fg="white",
-            activebackground="#15803d",
-            activeforeground="white",
-            padx=20,
-            pady=12,
-            command=self.create_game
-        ).pack(
-            fill="x",
-            padx=90,
-            pady=(30, 10)
-        )
-
-        # -----------------------------------------------------
-        # SEPARATEUR
-        # -----------------------------------------------------
-
-        tk.Label(
-            self.frame,
-            text="OU",
-            font=(
-                "Arial",
-                11,
-                "bold"
-            ),
-            fg="#6b7280",
-            bg="#1f2937"
-        ).pack(
-            pady=8
-        )
-
-        # -----------------------------------------------------
-        # IP
-        # -----------------------------------------------------
-
-        tk.Label(
-            self.frame,
-            text="IP du PC qui héberge",
-            font=(
-                "Arial",
-                14,
-                "bold"
-            ),
-            fg="white",
-            bg="#1f2937"
-        ).pack(
-            pady=(10, 5)
-        )
-
-        self.host_entry = tk.Entry(
-            self.frame,
-            font=(
-                "Arial",
-                14
-            ),
-            justify="center",
-            width=25
-        )
-
-        self.host_entry.insert(
-            0,
-            "192.168.1.42"
-        )
-
-        self.host_entry.pack(
-            pady=5
-        )
-
-        # -----------------------------------------------------
-        # PORT
-        # -----------------------------------------------------
-
-        tk.Label(
-            self.frame,
-            text="Port",
-            font=(
-                "Arial",
-                12
-            ),
-            fg="#d1d5db",
-            bg="#1f2937"
-        ).pack(
-            pady=(12, 3)
-        )
-
-        self.port_entry = tk.Entry(
-            self.frame,
-            font=(
-                "Arial",
-                12
-            ),
-            justify="center",
-            width=10
-        )
-
-        self.port_entry.insert(
-            0,
-            "5050"
-        )
-
-        self.port_entry.pack()
-
-        # -----------------------------------------------------
-        # REJOINDRE
-        # -----------------------------------------------------
-
-        tk.Button(
-            self.frame,
-            text="🌐  REJOINDRE LA PARTIE",
-            font=(
-                "Arial",
-                14,
-                "bold"
-            ),
+            text="🔄 Vérifier l'état",
+            font=("Arial", 12),
             bg="#2563eb",
             fg="white",
             activebackground="#1d4ed8",
             activeforeground="white",
             padx=20,
-            pady=12,
-            command=self.join_game
-        ).pack(
-            fill="x",
-            padx=90,
-            pady=20
-        )
+            pady=8,
+            command=self.check_state
+        ).pack(pady=20)
 
-    # -----------------------------------------------------
-# SE CONNECTER À RENDER (NOUVEAU)
-# -----------------------------------------------------
+        # Démarrer la vérification automatique
+        self.check_state()
+        self.auto_check()
 
-tk.Button(
-    self.frame,
-    text="☁️  SERVEUR EN LIGNE (RENDER)",
-    font=("Arial", 14, "bold"),
-    bg="#8b5cf6",  # Violet
-    fg="white",
-    activebackground="#7c3aed",
-    activeforeground="white",
-    padx=20,
-    pady=12,
-    command=self.connect_to_render
-).pack(
-    fill="x",
-    padx=90,
-    pady=(20, 10)
-)
+    def auto_check(self):
+        """Vérifie l'état toutes les 3 secondes"""
+        if not self.running:
+            return
+        self.check_state()
+        self.root.after(3000, self.auto_check)
 
-    # =========================================================
-    # NOM
-    # =========================================================
-
-    def get_name(self):
-
-        name = (
-            self.name_entry
-            .get()
-            .strip()
-        )
-
-        if not name:
-            return "Joueur"
-
-        return name[:30]
-
-    # =========================================================
-    # PORT
-    # =========================================================
-
-    def get_port(self):
-
+    def check_state(self):
+        """Vérifie si la partie a démarré"""
         try:
+            state = self.client.get_state()
 
-            port = int(
-                self.port_entry
-                .get()
+            if 'error' in state:
+                self.status_label.config(
+                    text=f"⚠️ {state['error'][:50]}",
+                    fg="#ef4444"
+                )
+                return
+
+            # Vérifier si la partie a commencé
+            if state.get('game_started', False):
+                self.running = False
+                self.start_game()
+                return
+
+            # Afficher le nombre de joueurs
+            players = state.get('players', [])
+            count = len(players)
+
+            if count >= 2:
+                self.status_label.config(
+                    text=f"🟢 {count} joueurs connectés - La partie va commencer !",
+                    fg="#4ade80"
+                )
+                self.running = False
+                self.root.after(1000, self.start_game)
+            elif count == 1:
+                self.status_label.config(
+                    text="🟡 1 joueur connecté - En attente d'un adversaire...",
+                    fg="#fcd34d"
+                )
+            else:
+                self.status_label.config(
+                    text="🟡 En attente d'autres joueurs...",
+                    fg="#fcd34d"
+                )
+
+        except Exception as e:
+            self.status_label.config(
+                text=f"⚠️ Erreur : {str(e)[:40]}",
+                fg="#ef4444"
             )
 
-        except ValueError:
-
-            messagebox.showerror(
-                "Réseau",
-                "Le port doit être un nombre."
-            )
-
-            return None
-
-        if (
-            port < 1
-            or
-            port > 65535
-        ):
-
-            messagebox.showerror(
-                "Réseau",
-                "Le port doit être compris entre 1 et 65535."
-            )
-
-            return None
-
-        return port
-
-    # =========================================================
-    # CREER UNE PARTIE
-    # =========================================================
-
-    def create_game(self):
-
-        name = self.get_name()
-
-        port = self.get_port()
-
-        if port is None:
-            return
-
+    def start_game(self):
+        """Lance l'interface de jeu"""
         try:
-
-            # -------------------------------------------------
-            # CREATION DU SERVEUR
-            # -------------------------------------------------
-
-            server = ScrabbleServer(
-                host="0.0.0.0",
-                port=port,
-                max_players=4
-            )
-
-            # -------------------------------------------------
-            # SERVEUR DANS UN THREAD
-            # -------------------------------------------------
-
-            import threading
-
-            server_thread = threading.Thread(
-                target=server.run,
-                daemon=True
-            )
-
-            server_thread.start()
-
-            # Garder une référence
-            self.root.scrabble_server = server
-
-            # -------------------------------------------------
-            # CONNEXION AUTOMATIQUE DU CREATEUR
-            # -------------------------------------------------
-
-            self.root.after(
-                500,
-                lambda:
-                    self.start_client(
-                        "127.0.0.1",
-                        port,
-                        name
-                    )
-            )
-
-        except Exception as error:
-
-            messagebox.showerror(
-                "Serveur",
-                f"Impossible de créer la partie :\n\n{error}"
-            )
-
-    # =========================================================
-    # REJOINDRE
-    # =========================================================
-
-    def join_game(self):
-
-        host = (
-            self.host_entry
-            .get()
-            .strip()
-        )
-
-        name = self.get_name()
-
-        port = self.get_port()
-
-        if port is None:
-            return
-
-        if not host:
-
-            messagebox.showerror(
-                "Réseau",
-                "Indique l'adresse IP du serveur."
-            )
-
-            return
-
-        self.start_client(
-            host,
-            port,
-            name
-        )
-
-def connect_to_render(self):
-    """Se connecte au serveur Render en ligne"""
-    name = self.get_name()
-    render_url = "https://scrabble-ml89.onrender.com"
-    
-    try:
-        # Créer le client
-        client = ScrabbleClient(render_url)
-        
-        # Rejoindre la partie
-        result = client.join(name)
-        
-        if 'error' in result:
-            messagebox.showerror(
-                "Connexion",
-                f"Erreur : {result['error']}"
-            )
-            return
-        
-        # Détruire l'écran de démarrage
-        self.frame.destroy()
-        
-        # Lancer le jeu (vous devrez adapter NetworkGame)
-        from network_game import NetworkGame
-        NetworkGame(
-            self.root,
-            render_url,  # Au lieu de host
-            443,         # Port HTTPS
-            name,
-            client=client  # Passer le client
-        )
-        
-    except Exception as error:
-        messagebox.showerror(
-            "Connexion",
-            f"Impossible de se connecter :\n\n{error}"
-        )
-        
-    # =========================================================
-    # LANCER LE CLIENT
-    # =========================================================
-
-    def start_client(
-        self,
-        host,
-        port,
-        name
-    ):
-
-        try:
-
             self.frame.destroy()
-
-            NetworkGame(
-                self.root,
-                host,
-                port,
-                name
-            )
-
-        except RuntimeError as error:
-
+            # Importer NetworkGame
+            from network_game import NetworkGame
+            NetworkGame(self.root, self.client, self.name)
+        except Exception as e:
             messagebox.showerror(
-                "Connexion",
-                str(error)
+                "Erreur",
+                f"Impossible de lancer le jeu :\n\n{e}"
+            )
+            self.root.destroy()
+
+
+# ============================================================
+# ÉCRAN DE CONNEXION RENDER
+# ============================================================
+
+class RenderConnector:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Scrabble - Connexion Render")
+        self.root.geometry("400x300")
+        self.root.resizable(False, False)
+        self.root.configure(bg="#1f2937")
+
+        # Titre
+        tk.Label(
+            self.root,
+            text="☁️ CONNEXION AU SERVEUR",
+            font=("Arial", 18, "bold"),
+            fg="white",
+            bg="#1f2937"
+        ).pack(pady=(20, 5))
+
+        tk.Label(
+            self.root,
+            text="Scrabble en ligne",
+            font=("Arial", 12),
+            fg="#9ca3af",
+            bg="#1f2937"
+        ).pack(pady=(0, 20))
+
+        # Nom
+        tk.Label(
+            self.root,
+            text="Votre nom",
+            font=("Arial", 12),
+            fg="white",
+            bg="#1f2937"
+        ).pack()
+
+        self.name_entry = tk.Entry(
+            self.root,
+            font=("Arial", 14),
+            justify="center",
+            width=25
+        )
+        self.name_entry.insert(0, "Joueur")
+        self.name_entry.pack(pady=5)
+
+        # Bouton
+        tk.Button(
+            self.root,
+            text="🔗 SE CONNECTER",
+            font=("Arial", 14, "bold"),
+            bg="#8b5cf6",
+            fg="white",
+            activebackground="#7c3aed",
+            activeforeground="white",
+            padx=30,
+            pady=10,
+            command=self.connect
+        ).pack(pady=20)
+
+        # Status
+        self.status_label = tk.Label(
+            self.root,
+            text="Prêt à se connecter",
+            font=("Arial", 10),
+            fg="#6b7280",
+            bg="#1f2937"
+        )
+        self.status_label.pack()
+
+    def connect(self):
+        name = self.name_entry.get().strip() or "Joueur"
+        render_url = "https://scrabble-ml89.onrender.com"
+
+        self.status_label.config(text="🔄 Connexion en cours...", fg="#fcd34d")
+        self.root.update()
+
+        try:
+            client = ScrabbleClient(render_url)
+            result = client.join(name)
+
+            if 'error' in result:
+                self.status_label.config(
+                    text=f"❌ {result['error'][:40]}...",
+                    fg="#ef4444"
+                )
+                messagebox.showerror(
+                    "Connexion",
+                    f"Erreur : {result['error']}\n\n"
+                    "💡 Astuces :\n"
+                    "• Le serveur gratuit peut mettre 30-50s à se réveiller\n"
+                    "• Vérifiez votre connexion Internet\n"
+                    f"• Accédez à {render_url} dans votre navigateur"
+                )
+                return
+
+            self.status_label.config(
+                text=f"✅ Connecté ! (joueur {client.player_index + 1})",
+                fg="#4ade80"
             )
 
-            # Revenir à l'écran d'accueil
-            self.create_interface()
+            # Passer à l'écran d'attente
+            self.root.destroy()
+            waiting_root = tk.Tk()
+            WaitingScreen(waiting_root, client, name)
+            waiting_root.mainloop()
+
+        except Exception as e:
+            self.status_label.config(text="❌ Erreur de connexion", fg="#ef4444")
+            messagebox.showerror(
+                "Erreur",
+                f"Impossible de se connecter :\n\n{e}"
+            )
 
 
-# =============================================================
+# ============================================================
 # MAIN
-# =============================================================
+# ============================================================
 
 def main():
-
     root = tk.Tk()
-
-    try:
-
-        StartScreen(
-            root
-        )
-
-        root.mainloop()
-
-    except FileNotFoundError as error:
-
-        messagebox.showerror(
-            "Dictionnaire",
-            str(error)
-        )
+    RenderConnector(root)
+    root.mainloop()
 
 
 if __name__ == "__main__":
-
     main()
