@@ -5,1120 +5,429 @@ from dictionary import dictionary
 
 
 class ScrabbleGame:
+    """
+    Version serveur de ScrabbleGame - Sans interface graphique
+    Uniquement la logique métier
+    """
 
-    def __init__(self, root, number_of_players):
-
-        self.root = root
-        self.number_of_players = number_of_players
-
+    def __init__(self, players):
+        """
+        Initialise le jeu avec une liste de joueurs
+        
+        Args:
+            players (list): Liste des noms des joueurs
+        """
+        self.number_of_players = len(players)
+        
         self.board = Board()
         self.tile_bag = TileBag()
-
-        self.players = []
-
-        for i in range(number_of_players):
-
-            name = simpledialog.askstring(
-                "Nom du joueur",
-                f"Nom du joueur {i + 1} :",
-                parent=root
-            )
-
-            if not name:
-                name = f"Joueur {i + 1}"
-
-            self.players.append(
-                Player(name)
-            )
-
+        
+        # Créer les objets Player
+        self.players = [
+            Player(name) 
+            for name in players
+        ]
+        
         self.current_player = 0
-
-        # Tuiles posées pendant le tour actuel
-        self.pending = []
-
-        # Nombre de passes successives
+        self.pending = []  # Tuiles posées temporairement
         self.consecutive_passes = 0
-
-        self.create_interface()
-
-        self.distribute_tiles()
-
-        self.update_interface()
-
-    # =========================================================
-    # INTERFACE
-    # =========================================================
-
-    def create_interface(self):
-
-        self.root.title("Scrabble")
-        self.root.geometry("1250x850")
-        self.root.configure(bg="#1f2937")
-
-        self.main_frame = tk.Frame(
-            self.root,
-            bg="#1f2937"
-        )
-
-        self.main_frame.pack(
-            fill="both",
-            expand=True
-        )
-
-        # --------------------------
-        # PLATEAU
-        # --------------------------
-
-        self.board_frame = tk.Frame(
-            self.main_frame,
-            bg="#1f2937"
-        )
-
-        self.board_frame.pack(
-            side="left",
-            padx=20,
-            pady=20
-        )
-
-        self.cells = []
-
-        for row in range(BOARD_SIZE):
-
-            row_cells = []
-
-            for col in range(BOARD_SIZE):
-
-                button = tk.Button(
-                    self.board_frame,
-                    text="",
-                    width=3,
-                    height=1,
-                    font=("Arial", 10, "bold"),
-                    command=lambda r=row, c=col:
-                    self.board_click(r, c)
-                )
-
-                button.grid(
-                    row=row,
-                    column=col,
-                    padx=1,
-                    pady=1
-                )
-
-                row_cells.append(button)
-
-            self.cells.append(row_cells)
-
-        # --------------------------
-        # PANNEAU
-        # --------------------------
-
-        self.side_frame = tk.Frame(
-            self.main_frame,
-            bg="#111827"
-        )
-
-        self.side_frame.pack(
-            side="right",
-            fill="y",
-            padx=10,
-            pady=20
-        )
-
-        tk.Label(
-            self.side_frame,
-            text="SCRABBLE",
-            font=("Arial", 26, "bold"),
-            fg="white",
-            bg="#111827"
-        ).pack(pady=15)
-
-        self.turn_label = tk.Label(
-            self.side_frame,
-            text="",
-            font=("Arial", 16, "bold"),
-            fg="#60a5fa",
-            bg="#111827"
-        )
-
-        self.turn_label.pack(pady=10)
-
-        self.score_label = tk.Label(
-            self.side_frame,
-            text="",
-            font=("Arial", 13),
-            fg="white",
-            bg="#111827",
-            justify="left"
-        )
-
-        self.score_label.pack(pady=10)
-
-        tk.Label(
-            self.side_frame,
-            text="Chevalet",
-            font=("Arial", 15, "bold"),
-            fg="white",
-            bg="#111827"
-        ).pack(pady=5)
-
-        self.rack_frame = tk.Frame(
-            self.side_frame,
-            bg="#111827"
-        )
-
-        self.rack_frame.pack()
-
-        self.play_button = tk.Button(
-            self.side_frame,
-            text="JOUER LE MOT",
-            font=("Arial", 12, "bold"),
-            bg="#16a34a",
-            fg="white",
-            command=self.play_word
-        )
-
-        self.play_button.pack(
-            fill="x",
-            padx=25,
-            pady=8
-        )
-
-        self.cancel_button = tk.Button(
-            self.side_frame,
-            text="Annuler",
-            command=self.cancel_pending
-        )
-
-        self.cancel_button.pack(
-            fill="x",
-            padx=25,
-            pady=4
-        )
-
-        self.pass_button = tk.Button(
-            self.side_frame,
-            text="Passer",
-            command=self.pass_turn
-        )
-
-        self.pass_button.pack(
-            fill="x",
-            padx=25,
-            pady=4
-        )
-
-        self.exchange_button = tk.Button(
-            self.side_frame,
-            text="Échanger",
-            command=self.exchange_tiles
-        )
-
-        self.exchange_button.pack(
-            fill="x",
-            padx=25,
-            pady=4
-        )
-
-        self.remaining_label = tk.Label(
-            self.side_frame,
-            text="",
-            fg="#9ca3af",
-            bg="#111827"
-        )
-
-        self.remaining_label.pack(pady=15)
-
-    # =========================================================
-    # DISTRIBUTION
-    # =========================================================
-
-    def distribute_tiles(self):
-
+        self.selected_index = None
+        
+        # Distribuer les tuiles
         for player in self.players:
+            player.rack = self.tile_bag.draw_multiple(7)
 
-            player.rack = (
-                self.tile_bag.draw_multiple(7)
-            )
+    # ============================================================
+    # ACCÈS À L'ÉTAT
+    # ============================================================
 
-    def refill(self, player):
-
-        while len(player.rack) < 7:
-
-            tile = self.tile_bag.draw()
-
-            if tile is None:
-                break
-
-            player.rack.append(tile)
-
-    # =========================================================
-    # AFFICHAGE
-    # =========================================================
-
-    def update_interface(self):
-
-        self.update_board()
-        self.update_rack()
-        self.update_scores()
-
-        player = self.players[
-            self.current_player
-        ]
-
-        self.turn_label.config(
-            text=f"Tour de {player.name}"
-        )
-
-        self.remaining_label.config(
-            text=(
-                f"Lettres dans le sac : "
-                f"{self.tile_bag.remaining()}"
-            )
-        )
-
-    def update_board(self):
-
-        for r in range(BOARD_SIZE):
-
-            for c in range(BOARD_SIZE):
-
-                button = self.cells[r][c]
-
-                letter = self.board.get(r, c)
-
-                if letter is not None:
-
-                    # Un joker est affiché comme sa lettre choisie
-                    display = (
-                        letter[0]
-                        if isinstance(letter, tuple)
-                        else letter
-                    )
-
-                    button.config(
-                        text=display,
-                        bg="#f59e0b",
-                        fg="black"
-                    )
-
-                    continue
-
-                multiplier = self.board.multiplier_at(r, c)
-
-                button.config(
-                    text=self.multiplier_text(
-                        multiplier
-                    ),
-                    bg=self.multiplier_color(
-                        multiplier
-                    ),
-                    fg="black"
-                )
-
-        # Lettres posées temporairement
-        for position in self.pending:
-
-            r = position["row"]
-            c = position["col"]
-            letter = position["letter"]
-
-            self.cells[r][c].config(
-                text=letter,
-                bg="#22c55e",
-                fg="black"
-            )
-
-    def multiplier_text(self, multiplier):
-
+    def private_state(self, player_index):
+        """
+        Retourne l'état du jeu pour un joueur spécifique
+        """
         return {
-            "TW": "M×3",
-            "DW": "M×2",
-            "TL": "L×3",
-            "DL": "L×2"
-        }.get(multiplier, "")
-
-    def multiplier_color(self, multiplier):
-
-        return {
-            "TW": "#ef4444",
-            "DW": "#fca5a5",
-            "TL": "#3b82f6",
-            "DL": "#93c5fd"
-        }.get(
-            multiplier,
-            "#e5e7eb"
-        )
-
-    def update_scores(self):
-
-        text = ""
-
-        for player in self.players:
-
-            text += (
-                f"{player.name} : "
-                f"{player.score}\n"
-            )
-
-        self.score_label.config(
-            text=text
-        )
-
-    def update_rack(self):
-
-        for widget in self.rack_frame.winfo_children():
-            widget.destroy()
-
-        player = self.players[
-            self.current_player
-        ]
-
-        for index, tile in enumerate(player.rack):
-
-            value = TILE_VALUES[tile]
-
-            text = (
-                "?"
-                if tile == "?"
-                else tile
-            )
-
-            button = tk.Button(
-                self.rack_frame,
-                text=f"{text}\n{value}",
-                width=4,
-                height=2,
-                font=("Arial", 11, "bold"),
-                command=lambda i=index:
-                self.select_tile(i)
-            )
-
-            button.grid(
-                row=0,
-                column=index,
-                padx=2
-            )
-
-    # =========================================================
-    # SELECTION
-    # =========================================================
-
-    def select_tile(self, index):
-
-        player = self.players[
-            self.current_player
-        ]
-
-        if index >= len(player.rack):
-            return
-
-        # Une seule tuile sélectionnée
-        self.selected_index = index
-
-    # =========================================================
-    # PLACEMENT
-    # =========================================================
-
-    def board_click(self, row, col):
-
-        player = self.players[
-            self.current_player
-        ]
-
-        if self.board.get(row, col) is not None:
-            return
-
-        if not hasattr(self, "selected_index"):
-            return
-
-        index = self.selected_index
-
-        if index >= len(player.rack):
-            return
-
-        tile = player.rack[index]
-
-        # Pour le joker :
-        # on demande quelle lettre il représente.
-        if tile == "?":
-
-            letter = simpledialog.askstring(
-                "Joker",
-                "Quelle lettre représente le joker ?",
-                parent=self.root
-            )
-
-            if not letter:
-                return
-
-            letter = letter.upper()
-
-            if len(letter) != 1 or not letter.isalpha():
-                messagebox.showerror(
-                    "Joker",
-                    "Entre une seule lettre."
-                )
-                return
-
-            placed_letter = letter
-
-        else:
-
-            placed_letter = tile
-
-        # Vérifier qu'on ne pose pas deux fois au même endroit
-        for item in self.pending:
-
-            if (
-                item["row"] == row
-                and
-                item["col"] == col
-            ):
-                return
-
-        self.pending.append({
-            "row": row,
-            "col": col,
-            "letter": placed_letter,
-            "tile": tile,
-            "rack_index": index
-        })
-
-        del self.selected_index
-
-        self.update_interface()
-
-    # =========================================================
-    # ANNULATION
-    # =========================================================
-
-    def cancel_pending(self):
-
-        self.pending.clear()
-
-        if hasattr(self, "selected_index"):
-            del self.selected_index
-
-        self.update_interface()
-
-    # =========================================================
-    # VALIDATION DU PLACEMENT
-    # =========================================================
-
-    def validate_placement(self):
-
-        if not self.pending:
-            return False, "Aucune lettre posée."
-
-        positions = [
-            (p["row"], p["col"])
-            for p in self.pending
-        ]
-
-        # Une seule lettre
-        if len(positions) == 1:
-
-            r, c = positions[0]
-
-            if self.board.is_empty():
-
-                if (r, c) != (7, 7):
-                    return (
-                        False,
-                        "Le premier mot doit passer par le centre."
-                    )
-
-            else:
-
-                connected = any(
-                    self.board.get(nr, nc) is not None
-                    for nr, nc in
-                    self.board.neighbours(r, c)
-                )
-
-                if not connected:
-                    return (
-                        False,
-                        "Le mot doit être relié au plateau."
-                    )
-
-            return True, ""
-
-        rows = {p[0] for p in positions}
-        cols = {p[1] for p in positions}
-
-        if len(rows) != 1 and len(cols) != 1:
-
-            return (
-                False,
-                "Les lettres doivent être alignées."
-            )
-
-        horizontal = len(rows) == 1
-
-        if horizontal:
-
-            row = next(iter(rows))
-
-            positions_sorted = sorted(
-                positions,
-                key=lambda p: p[1]
-            )
-
-            start = positions_sorted[0][1]
-            end = positions_sorted[-1][1]
-
-            for col in range(start, end + 1):
-
-                if self.board.get(row, col) is None:
-
-                    if (row, col) not in positions:
-                        return (
-                            False,
-                            "Le mot ne peut pas contenir de trou."
-                        )
-
-        else:
-
-            col = next(iter(cols))
-
-            positions_sorted = sorted(
-                positions,
-                key=lambda p: p[0]
-            )
-
-            start = positions_sorted[0][0]
-            end = positions_sorted[-1][0]
-
-            for row in range(start, end + 1):
-
-                if self.board.get(row, col) is None:
-
-                    if (row, col) not in positions:
-                        return (
-                            False,
-                            "Le mot ne peut pas contenir de trou."
-                        )
-
-        # Premier coup : doit toucher le centre
-        if self.board.is_empty():
-
-            if (7, 7) not in positions:
-
-                return (
-                    False,
-                    "Le premier mot doit passer par la case centrale."
-                )
-
-        else:
-
-            connected = False
-
-            for r, c in positions:
-
-                for nr, nc in self.board.neighbours(r, c):
-
-                    if self.board.get(nr, nc) is not None:
-
-                        connected = True
-                        break
-
-                if connected:
-                    break
-
-            if not connected:
-
-                return (
-                    False,
-                    "Le nouveau mot doit être connecté au plateau."
-                )
-
-        return True, ""
-
-    # =========================================================
-    # CONSTRUCTION DES MOTS
-    # =========================================================
+            "board": self.board.grid,
+            "used_multipliers": [
+                list(position) 
+                for position in self.board.used_multipliers
+            ],
+            "players": [
+                {
+                    "name": player.name,
+                    "score": player.score,
+                    "rack_count": len(player.rack)
+                }
+                for player in self.players
+            ],
+            "current_player": self.current_player,
+            "remaining": self.tile_bag.remaining(),
+            "pending": [
+                {
+                    "row": p["row"],
+                    "col": p["col"],
+                    "letter": p["letter"]
+                }
+                for p in self.pending
+            ],
+            "rack": list(self.players[player_index].rack)
+        }
+
+    # ============================================================
+    # LETTRES / MOTS
+    # ============================================================
 
     def get_letter(self, row, col):
-
-        # Tuile temporaire
         for p in self.pending:
-
-            if (
-                p["row"] == row
-                and
-                p["col"] == col
-            ):
+            if p["row"] == row and p["col"] == col:
                 return p["letter"]
-
-        # Tuile déjà sur le plateau
+        
         value = self.board.get(row, col)
-
         if value is None:
             return None
-
         if isinstance(value, tuple):
             return value[0]
-
         return value
 
     def build_word(self, row, col, dr, dc):
-
-        # Remonter jusqu'au début du mot
-        r = row
-        c = col
-
-        while (
-            self.board.inside(r - dr, c - dc)
-            and
-            self.get_letter(r - dr, c - dc) is not None
-        ):
+        r, c = row, col
+        
+        while (self.board.inside(r - dr, c - dc) and 
+               self.get_letter(r - dr, c - dc) is not None):
             r -= dr
             c -= dc
-
+        
         letters = []
         positions = []
-
+        
         while self.board.inside(r, c):
-
             letter = self.get_letter(r, c)
-
             if letter is None:
                 break
-
             letters.append(letter)
             positions.append((r, c))
-
             r += dr
             c += dc
-
+        
         return "".join(letters), positions
 
+    # ============================================================
+    # VALIDATION DU PLACEMENT
+    # ============================================================
+
+    def validate_placement(self):
+        if not self.pending:
+            return False, "Aucune lettre posée."
+        
+        positions = [(p["row"], p["col"]) for p in self.pending]
+        
+        # Une seule lettre
+        if len(positions) == 1:
+            r, c = positions[0]
+            if self.board.is_empty():
+                if (r, c) != (7, 7):
+                    return False, "Le premier mot doit passer par le centre."
+            else:
+                connected = any(
+                    self.board.get(nr, nc) is not None
+                    for nr, nc in self.board.neighbours(r, c)
+                )
+                if not connected:
+                    return False, "Le mot doit être relié au plateau."
+            return True, ""
+        
+        rows = {p[0] for p in positions}
+        cols = {p[1] for p in positions}
+        
+        if len(rows) != 1 and len(cols) != 1:
+            return False, "Les lettres doivent être alignées."
+        
+        horizontal = len(rows) == 1
+        
+        if horizontal:
+            row = next(iter(rows))
+            sorted_positions = sorted(positions, key=lambda p: p[1])
+            start = sorted_positions[0][1]
+            end = sorted_positions[-1][1]
+            
+            for col in range(start, end + 1):
+                if self.board.get(row, col) is None and (row, col) not in positions:
+                    return False, "Le mot ne peut pas contenir de trou."
+        else:
+            col = next(iter(cols))
+            sorted_positions = sorted(positions, key=lambda p: p[0])
+            start = sorted_positions[0][0]
+            end = sorted_positions[-1][0]
+            
+            for row in range(start, end + 1):
+                if self.board.get(row, col) is None and (row, col) not in positions:
+                    return False, "Le mot ne peut pas contenir de trou."
+        
+        if self.board.is_empty():
+            if (7, 7) not in positions:
+                return False, "Le premier mot doit passer par la case centrale."
+        else:
+            connected = False
+            for r, c in positions:
+                for nr, nc in self.board.neighbours(r, c):
+                    if self.board.get(nr, nc) is not None:
+                        connected = True
+                        break
+                if connected:
+                    break
+            if not connected:
+                return False, "Le nouveau mot doit être connecté au plateau."
+        
+        return True, ""
+
+    # ============================================================
+    # DETECTION DES MOTS
+    # ============================================================
+
     def find_words(self):
-
         words = []
-
-        # Pour chaque nouvelle tuile
-        for p in self.pending:
-
-            r = p["row"]
-            c = p["col"]
-
-            # Horizontal
-            word, positions = self.build_word(
-                r, c, 0, 1
-            )
-
-            if len(word) >= 2:
-                words.append(
-                    ("horizontal", word, positions)
-                )
-
-            # Vertical
-            word, positions = self.build_word(
-                r, c, 1, 0
-            )
-
-            if len(word) >= 2:
-                words.append(
-                    ("vertical", word, positions)
-                )
-
-        # Supprimer doublons
-        unique = []
-
         seen = set()
+        
+        for p in self.pending:
+            r, c = p["row"], p["col"]
+            
+            # Horizontal
+            word, positions = self.build_word(r, c, 0, 1)
+            if len(word) >= 2:
+                key = ("horizontal", tuple(positions))
+                if key not in seen:
+                    seen.add(key)
+                    words.append(("horizontal", word, positions))
+            
+            # Vertical
+            word, positions = self.build_word(r, c, 1, 0)
+            if len(word) >= 2:
+                key = ("vertical", tuple(positions))
+                if key not in seen:
+                    seen.add(key)
+                    words.append(("vertical", word, positions))
+        
+        return words
 
-        for direction, word, positions in words:
-
-            key = (
-                direction,
-                tuple(positions)
-            )
-
-            if key not in seen:
-
-                seen.add(key)
-
-                unique.append(
-                    (direction, word, positions)
-                )
-
-        return unique
-
-    # =========================================================
+    # ============================================================
     # SCORE
-    # =========================================================
+    # ============================================================
 
     def score_word(self, word, positions):
-
         total = 0
         word_multiplier = 1
-
-        for letter, (r, c) in zip(
-            word,
-            positions
-        ):
-
-            value = TILE_VALUES.get(
-                letter,
-                0
-            )
-
-            # Le bonus ne s'applique que
-            # si la case vient d'être jouée.
+        
+        for letter, (r, c) in zip(word, positions):
+            value = TILE_VALUES.get(letter, 0)
+            
             pending_tile = next(
-                (
-                    p
-                    for p in self.pending
-                    if p["row"] == r
-                    and p["col"] == c
-                ),
+                (p for p in self.pending if p["row"] == r and p["col"] == c),
                 None
             )
-
+            
             if pending_tile is not None:
-
-                multiplier = (
-                    self.board.multiplier_at(
-                        r, c
-                    )
-                )
-
+                multiplier = self.board.multiplier_at(r, c)
                 if multiplier == "DL":
                     value *= 2
-
                 elif multiplier == "TL":
                     value *= 3
-
                 elif multiplier == "DW":
                     word_multiplier *= 2
-
                 elif multiplier == "TW":
                     word_multiplier *= 3
-
-                # Joker = 0
                 if pending_tile["tile"] == "?":
                     value = 0
-
+            
             total += value
-
+        
         return total * word_multiplier
 
-    # =========================================================
-    # JOUER
-    # =========================================================
+    # ============================================================
+    # ACTIONS DU JOUEUR
+    # ============================================================
 
-    def play_word(self):
+    def place(self, player_index, row, col, rack_index, joker_letter=None):
+        # Vérification du tour
+        if player_index != self.current_player:
+            return False, "Ce n'est pas votre tour."
+        
+        # Vérification de la case
+        if not self.board.inside(row, col):
+            return False, "Case invalide."
+        
+        if self.board.get(row, col) is not None:
+            return False, "Cette case est déjà occupée."
+        
+        # Vérification doublon temporaire
+        for p in self.pending:
+            if p["row"] == row and p["col"] == col:
+                return False, "Cette case est déjà sélectionnée."
+        
+        player = self.players[player_index]
+        
+        # Vérification du chevalet
+        if rack_index < 0 or rack_index >= len(player.rack):
+            return False, "Tuile invalide."
+        
+        tile = player.rack[rack_index]
+        
+        # Joker
+        if tile == "?":
+            if not joker_letter or len(joker_letter) != 1 or not joker_letter.isalpha():
+                return False, "Le joker doit représenter une lettre."
+            letter = joker_letter.upper()
+        else:
+            letter = tile
+        
+        # Placement temporaire
+        self.pending.append({
+            "row": row,
+            "col": col,
+            "letter": letter,
+            "tile": tile,
+            "rack_index": rack_index
+        })
+        
+        return True, ""
 
+    def cancel(self, player_index):
+        if player_index != self.current_player:
+            return False, "Ce n'est pas votre tour."
+        
+        self.pending.clear()
+        return True, ""
+
+    def play(self, player_index):
+        if player_index != self.current_player:
+            return False, "Ce n'est pas votre tour."
+        
+        # Validation
         valid, error = self.validate_placement()
-
         if not valid:
-
-            messagebox.showerror(
-                "Placement invalide",
-                error
-            )
-
-            return
-
+            return False, error
+        
+        # Recherche des mots
         words = self.find_words()
-
-        # Aucun mot détecté
         if not words:
-
-            messagebox.showerror(
-                "Mot invalide",
-                "Aucun mot valide n'a été créé."
-            )
-
-            return
-
+            return False, "Aucun mot valide n'a été créé."
+        
         # Vérification dictionnaire
         for _, word, _ in words:
-
             if word not in dictionary:
-
-                messagebox.showerror(
-                    "Mot invalide",
-                    f"« {word} » n'est pas autorisé."
-                )
-
-                return
-
-        # -------------------------
-        # CALCUL
-        # -------------------------
-
+                return False, f"« {word} » n'est pas autorisé."
+        
+        # Calcul du score
         total_score = 0
-
         for _, word, positions in words:
-
-            total_score += self.score_word(
-                word,
-                positions
-            )
-
-        # Scrabble = 7 tuiles posées
+            total_score += self.score_word(word, positions)
+        
+        # Scrabble
         if len(self.pending) == 7:
-
             total_score += 50
-
-        player = self.players[
-            self.current_player
-        ]
-
-        # -------------------------
-        # VALIDATION DÉFINITIVE
-        # -------------------------
-
+        
+        player = self.players[player_index]
+        
+        # Validation définitive
         positions = []
-
         for p in self.pending:
-
-            r = p["row"]
-            c = p["col"]
-
-            self.board.set(
-                r,
-                c,
-                p["letter"]
-            )
-
-            positions.append(
-                (r, c)
-            )
-
-        # Les bonus viennent d'être consommés
-        self.board.consume_multipliers(
-            positions
-        )
-
+            self.board.set(p["row"], p["col"], p["letter"])
+            positions.append((p["row"], p["col"]))
+        
+        self.board.consume_multipliers(positions)
+        
         # Retirer les tuiles du chevalet
-        for p in sorted(
-            self.pending,
-            key=lambda x: x["rack_index"],
-            reverse=True
-        ):
-
-            index = p["rack_index"]
-
-            if index < len(player.rack):
-
-                player.rack.pop(index)
-
-        player.add_score(
-            total_score
-        )
-
+        for p in sorted(self.pending, key=lambda x: x["rack_index"], reverse=True):
+            player.rack.pop(p["rack_index"])
+        
+        player.add_score(total_score)
         self.pending.clear()
-
-        self.refill(player)
-
+        
+        # Remplir le chevalet
+        while len(player.rack) < 7:
+            tile = self.tile_bag.draw()
+            if tile is None:
+                break
+            player.rack.append(tile)
+        
         self.consecutive_passes = 0
-
-        word_list = "\n".join(
-            f"{word} : "
-            f"{self.score_word(word, positions)} pts"
-            for _, word, positions in words
-        )
-
-        messagebox.showinfo(
-            "Mot joué",
-            f"{word_list}\n\n"
-            f"TOTAL : +{total_score} points"
-        )
-
+        
+        result = {
+            "score": total_score,
+            "words": [word for _, word, _ in words]
+        }
+        
         # Fin de partie
-        if (
-            len(player.rack) == 0
-            and
-            self.tile_bag.remaining() == 0
-        ):
-
-            self.end_game()
-            return
-
+        if len(player.rack) == 0 and self.tile_bag.remaining() == 0:
+            result["game_over"] = self.finish()
+            return True, result
+        
         self.next_turn()
+        return True, result
 
-    # =========================================================
-    # PASSER
-    # =========================================================
-
-    def pass_turn(self):
-
-        if self.pending:
-
-            self.cancel_pending()
-
+    def pass_turn(self, player_index):
+        if player_index != self.current_player:
+            return False, "Ce n'est pas votre tour."
+        
+        self.pending.clear()
         self.consecutive_passes += 1
-
-        # Règle simplifiée :
-        # deux tours par joueur sans jouer
-        if self.consecutive_passes >= (
-            self.number_of_players * 2
-        ):
-
-            self.end_game()
-
-            return
-
+        
+        if self.consecutive_passes >= len(self.players) * 2:
+            return True, {"game_over": self.finish()}
+        
         self.next_turn()
+        return True, {}
 
-    # =========================================================
-    # ÉCHANGE
-    # =========================================================
-
-    def exchange_tiles(self):
-
+    def exchange(self, player_index, indices):
+        if player_index != self.current_player:
+            return False, "Ce n'est pas votre tour."
+        
         if self.pending:
-
-            messagebox.showwarning(
-                "Échange",
-                "Annule d'abord ton placement."
-            )
-
-            return
-
-        if self.tile_bag.remaining() < 1:
-
-            messagebox.showwarning(
-                "Échange",
-                "Le sac est vide."
-            )
-
-            return
-
-        player = self.players[
-            self.current_player
-        ]
-
-        choice = simpledialog.askstring(
-            "Échanger",
-            "Indique les positions des lettres à échanger\n"
-            "Exemple : 1 3 5",
-            parent=self.root
-        )
-
-        if not choice:
-            return
-
-        try:
-
-            indices = [
-                int(x) - 1
-                for x in choice.split()
-            ]
-
-        except ValueError:
-
-            messagebox.showerror(
-                "Erreur",
-                "Positions invalides."
-            )
-
-            return
-
-        indices = sorted(
-            set(indices),
-            reverse=True
-        )
-
-        if any(
-            i < 0 or i >= len(player.rack)
-            for i in indices
-        ):
-
-            messagebox.showerror(
-                "Erreur",
-                "Une position est invalide."
-            )
-
-            return
-
-        if len(indices) > self.tile_bag.remaining():
-
-            messagebox.showwarning(
-                "Échange",
-                "Pas assez de lettres dans le sac."
-            )
-
-            return
-
-        old_tiles = []
-
+            return False, "Annulez d'abord votre placement."
+        
+        if not indices:
+            return False, "Aucune tuile sélectionnée."
+        
+        if self.tile_bag.remaining() < len(indices):
+            return False, "Pas assez de lettres dans le sac."
+        
+        player = self.players[player_index]
+        
+        indices = sorted(set(indices), reverse=True)
+        
+        if any(i < 0 or i >= len(player.rack) for i in indices):
+            return False, "Position de tuile invalide."
+        
+        old_tiles = [player.rack[i] for i in indices]
+        
         for index in indices:
-
-            old_tiles.append(
-                player.rack.pop(index)
-            )
-
-        new_tiles = self.tile_bag.draw_multiple(
-            len(old_tiles)
-        )
-
-        player.rack.extend(
-            new_tiles
-        )
-
-        self.tile_bag.put_back(
-            old_tiles
-        )
-
+            player.rack.pop(index)
+        
+        new_tiles = self.tile_bag.draw_multiple(len(old_tiles))
+        player.rack.extend(new_tiles)
+        self.tile_bag.put_back(old_tiles)
+        
         self.consecutive_passes = 0
-
         self.next_turn()
-
-    # =========================================================
-    # TOUR SUIVANT
-    # =========================================================
+        
+        return True, {}
 
     def next_turn(self):
-
         self.current_player += 1
-
-        if self.current_player >= self.number_of_players:
-
+        if self.current_player >= len(self.players):
             self.current_player = 0
 
-        self.update_interface()
-
-    # =========================================================
-    # FIN DE PARTIE
-    # =========================================================
-
-    def end_game(self):
-
-        # Soustraction des lettres restantes
+    def finish(self):
+        # Retirer les points des lettres restantes
         for player in self.players:
-
-            penalty = sum(
-                TILE_VALUES[tile]
-                for tile in player.rack
-            )
-
+            penalty = sum(TILE_VALUES[tile] for tile in player.rack)
             player.score -= penalty
-
+        
         ranking = sorted(
-            self.players,
-            key=lambda p: p.score,
+            [
+                {"name": player.name, "score": player.score}
+                for player in self.players
+            ],
+            key=lambda p: p["score"],
             reverse=True
         )
-
-        text = "FIN DE PARTIE\n\n"
-
-        for i, player in enumerate(ranking):
-
-            text += (
-                f"{i + 1}. "
-                f"{player.name} : "
-                f"{player.score} points\n"
-            )
-
-        messagebox.showinfo(
-            "Fin de partie",
-            text
-        )
-
-        self.root.destroy()
+        
+        return ranking
