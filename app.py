@@ -46,7 +46,8 @@ def home():
         "players": players,
         "players_count": len(players),
         "game_started": game_started,
-        "max_players": target_max_players or 4
+        "max_players": target_max_players or 4,
+        "configured": target_max_players is not None
     })
 
 
@@ -58,6 +59,7 @@ def get_status():
         "players_count": len(players),
         "players": players,
         "max_players": target_max_players or 4,
+        "configured": target_max_players is not None,
         "engine_initialized": engine is not None
     })
 
