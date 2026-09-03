@@ -112,7 +112,7 @@ def join_game():
         # Démarrer la partie si 2 joueurs sont présents
         if len(players) >= 2 and not game_started:
             try:
-                engine = GameEngine(players, len(players))
+                engine = GameEngine(players)
                 game_started = True
                 logger.info(f"🎮 Partie démarrée avec {len(players)} joueurs : {players}")
             except Exception as e:
