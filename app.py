@@ -1,19 +1,37 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
+import logging
 
-# Importez votre moteur de jeu
-# Si vous avez renommé game.py en game_engine.py
+# Configuration des logs pour le débogage
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-from game_engine import ScrabbleGame as GameEngine
+# Import de votre moteur de jeu
+try:
+    from game_engine import ScrabbleGame as GameEngine
+
+    logger.info("✅ GameEngine importé depuis game_engine.py")
+except ImportError:
+    try:
+        from game import ScrabbleGame as GameEngine
+
+        logger.info("✅ GameEngine importé depuis game.py")
+    except ImportError:
+        logger.error("❌ Impossible d'importer GameEngine")
+        raise
 
 app = Flask(__name__)
 CORS(app)  # Permet aux clients de se connecter depuis n'importe où
 
-# État du jeu
+# ============================================================
+# ÉTAT DU JEU
+# ============================================================
+
 engine = None
 players = []
 game_started = False
+
 
 # ============================================================
 # ENDPOINTS DE L'API
@@ -21,137 +39,271 @@ game_started = False
 
 @app.route('/')
 def home():
+    """Page d'accueil / statut du serveur"""
     return jsonify({
         "status": "Scrabble Server is running!",
-        "players": len(players),
-        "game_started": game_started
+        "players": players,
+        "players_count": len(players),
+        "game_started": game_started,
+        "max_players": 4
     })
+
+
+@app.route('/status', methods=['GET'])
+def get_status():
+    """Retourne l'état détaillé du serveur"""
+    return jsonify({
+        "game_started": game_started,
+        "players_count": len(players),
+        "players": players,
+        "max_players": 4,
+        "engine_initialized": engine is not None
+    })
+
+
+@app.route('/reset', methods=['POST'])
+def reset_game():
+    """Réinitialise complètement la partie"""
+    global engine, players, game_started
+    engine = None
+    players = []
+    game_started = False
+    logger.info("🔄 Partie réinitialisée")
+    return jsonify({
+        "status": "reset",
+        "message": "Partie réinitialisée avec succès"
+    })
+
 
 @app.route('/join', methods=['POST'])
 def join_game():
     """Un joueur rejoint la partie"""
     global engine, players, game_started
-    
-    data = request.get_json()
-    name = data.get('name', 'Joueur')
-    
-    if game_started:
-        return jsonify({"error": "La partie a déjà commencé"}), 400
-    
-    if len(players) >= 4:
-        return jsonify({"error": "Partie complète"}), 400
-    
-    player_index = len(players)
-    players.append(name)
-    
-    # Démarrer la partie à 2 joueurs
-    if len(players) >= 2 and not game_started:
-        engine = GameEngine(players)
-        game_started = True
-    
-    return jsonify({
-        "player_index": player_index,
-        "game_started": game_started,
-        "message": f"Bienvenue {name} !"
-    })
+
+    try:
+        # Récupérer les données
+        data = request.get_json()
+        if data is None:
+            logger.warning("⚠️ Requête /join sans JSON")
+            return jsonify({"error": "Requête invalide : JSON attendu"}), 400
+
+        name = data.get('name', 'Joueur').strip()
+        if not name:
+            name = "Joueur"
+
+        logger.info(f"📥 Tentative de connexion : {name}")
+        logger.info(f"   État actuel : {len(players)} joueurs, game_started={game_started}")
+
+        # Vérifier si la partie est pleine
+        if len(players) >= 4:
+            logger.warning(f"❌ Partie pleine : {len(players)}/4 joueurs")
+            return jsonify({"error": "Partie complète (4 joueurs maximum)"}), 400
+
+        # Vérifier si le nom existe déjà
+        if name in players:
+            logger.warning(f"❌ Nom déjà pris : {name}")
+            return jsonify({"error": f"Le nom '{name}' est déjà utilisé."}), 400
+
+        # Ajouter le joueur
+        player_index = len(players)
+        players.append(name)
+        logger.info(f"✅ Joueur ajouté : {name} (index {player_index})")
+
+        # Démarrer la partie si 2 joueurs sont présents
+        if len(players) >= 2 and not game_started:
+            try:
+                engine = GameEngine(players, len(players))
+                game_started = True
+                logger.info(f"🎮 Partie démarrée avec {len(players)} joueurs : {players}")
+            except Exception as e:
+                logger.error(f"❌ Erreur lors du démarrage du jeu : {e}")
+                # Annuler l'ajout du joueur en cas d'erreur
+                players.pop()
+                return jsonify({"error": f"Erreur de démarrage : {str(e)}"}), 500
+
+        return jsonify({
+            "player_index": player_index,
+            "game_started": game_started,
+            "players_count": len(players),
+            "message": f"Bienvenue {name} !",
+            "waiting": len(players) < 2
+        })
+
+    except Exception as e:
+        logger.error(f"❌ Erreur dans /join : {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/state', methods=['GET'])
 def get_state():
     """Récupère l'état du jeu pour un joueur"""
-    player_index = int(request.args.get('player_index', 0))
-    
-    if not game_started or engine is None:
-        return jsonify({"error": "Partie pas encore commencée"}), 400
-    
-    state = engine.private_state(player_index)
-    return jsonify(state)
+    try:
+        player_index = request.args.get('player_index', default=0, type=int)
+
+        if not game_started or engine is None:
+            return jsonify({
+                "game_started": False,
+                "waiting": True,
+                "players_count": len(players),
+                "message": "En attente d'autres joueurs..."
+            })
+
+        state = engine.private_state(player_index)
+        state["game_started"] = True
+        state["players_count"] = len(players)
+        return jsonify(state)
+
+    except Exception as e:
+        logger.error(f"❌ Erreur dans /state : {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/place', methods=['POST'])
 def place_tile():
     """Pose une tuile"""
-    data = request.get_json()
-    player_index = data.get('player_index')
-    row = data.get('row')
-    col = data.get('col')
-    rack_index = data.get('rack_index')
-    joker_letter = data.get('joker_letter')
-    
-    if not game_started or engine is None:
-        return jsonify({"error": "Partie pas encore commencée"}), 400
-    
-    success, result = engine.place(
-        player_index, row, col, rack_index, joker_letter
-    )
-    
-    if success:
-        return jsonify({"success": True, "message": result})
-    else:
-        return jsonify({"success": False, "error": result}), 400
+    try:
+        data = request.get_json()
+        if data is None:
+            return jsonify({"error": "JSON attendu"}), 400
+
+        player_index = data.get('player_index')
+        row = data.get('row')
+        col = data.get('col')
+        rack_index = data.get('rack_index')
+        joker_letter = data.get('joker_letter')
+
+        if not game_started or engine is None:
+            return jsonify({"error": "Partie pas encore commencée"}), 400
+
+        success, result = engine.place(
+            player_index, row, col, rack_index, joker_letter
+        )
+
+        if success:
+            return jsonify({"success": True, "message": result})
+        else:
+            return jsonify({"success": False, "error": result}), 400
+
+    except Exception as e:
+        logger.error(f"❌ Erreur dans /place : {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/play', methods=['POST'])
 def play_word():
     """Joue le mot"""
-    data = request.get_json()
-    player_index = data.get('player_index')
-    
-    if not game_started or engine is None:
-        return jsonify({"error": "Partie pas encore commencée"}), 400
-    
-    success, result = engine.play(player_index)
-    
-    if success:
-        return jsonify({"success": True, "result": result})
-    else:
-        return jsonify({"success": False, "error": result}), 400
+    try:
+        data = request.get_json()
+        if data is None:
+            return jsonify({"error": "JSON attendu"}), 400
+
+        player_index = data.get('player_index')
+
+        if not game_started or engine is None:
+            return jsonify({"error": "Partie pas encore commencée"}), 400
+
+        success, result = engine.play(player_index)
+
+        if success:
+            return jsonify({"success": True, "result": result})
+        else:
+            return jsonify({"success": False, "error": result}), 400
+
+    except Exception as e:
+        logger.error(f"❌ Erreur dans /play : {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/pass', methods=['POST'])
 def pass_turn():
     """Passe son tour"""
-    data = request.get_json()
-    player_index = data.get('player_index')
-    
-    if not game_started or engine is None:
-        return jsonify({"error": "Partie pas encore commencée"}), 400
-    
-    success, result = engine.pass_turn(player_index)
-    
-    if success:
-        return jsonify({"success": True, "result": result})
-    else:
-        return jsonify({"success": False, "error": result}), 400
+    try:
+        data = request.get_json()
+        if data is None:
+            return jsonify({"error": "JSON attendu"}), 400
+
+        player_index = data.get('player_index')
+
+        if not game_started or engine is None:
+            return jsonify({"error": "Partie pas encore commencée"}), 400
+
+        success, result = engine.pass_turn(player_index)
+
+        if success:
+            return jsonify({"success": True, "result": result})
+        else:
+            return jsonify({"success": False, "error": result}), 400
+
+    except Exception as e:
+        logger.error(f"❌ Erreur dans /pass : {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/exchange', methods=['POST'])
 def exchange_tiles():
     """Échange des tuiles"""
-    data = request.get_json()
-    player_index = data.get('player_index')
-    indices = data.get('indices', [])
-    
-    if not game_started or engine is None:
-        return jsonify({"error": "Partie pas encore commencée"}), 400
-    
-    success, result = engine.exchange(player_index, indices)
-    
-    if success:
-        return jsonify({"success": True, "result": result})
-    else:
-        return jsonify({"success": False, "error": result}), 400
+    try:
+        data = request.get_json()
+        if data is None:
+            return jsonify({"error": "JSON attendu"}), 400
+
+        player_index = data.get('player_index')
+        indices = data.get('indices', [])
+
+        if not game_started or engine is None:
+            return jsonify({"error": "Partie pas encore commencée"}), 400
+
+        success, result = engine.exchange(player_index, indices)
+
+        if success:
+            return jsonify({"success": True, "result": result})
+        else:
+            return jsonify({"success": False, "error": result}), 400
+
+    except Exception as e:
+        logger.error(f"❌ Erreur dans /exchange : {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/cancel', methods=['POST'])
 def cancel_placement():
     """Annule le placement"""
-    data = request.get_json()
-    player_index = data.get('player_index')
-    
-    if not game_started or engine is None:
-        return jsonify({"error": "Partie pas encore commencée"}), 400
-    
-    success, result = engine.cancel(player_index)
-    
-    if success:
-        return jsonify({"success": True, "message": result})
-    else:
-        return jsonify({"success": False, "error": result}), 400
+    try:
+        data = request.get_json()
+        if data is None:
+            return jsonify({"error": "JSON attendu"}), 400
+
+        player_index = data.get('player_index')
+
+        if not game_started or engine is None:
+            return jsonify({"error": "Partie pas encore commencée"}), 400
+
+        success, result = engine.cancel(player_index)
+
+        if success:
+            return jsonify({"success": True, "message": result})
+        else:
+            return jsonify({"success": False, "error": result}), 400
+
+    except Exception as e:
+        logger.error(f"❌ Erreur dans /cancel : {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================
+# GESTION DES ERREURS GLOBALES
+# ============================================================
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({"error": "Endpoint non trouvé"}), 404
+
+
+@app.errorhandler(500)
+def internal_error(error):
+    logger.error(f"❌ Erreur interne : {error}")
+    return jsonify({"error": "Erreur interne du serveur"}), 500
+
 
 # ============================================================
 # DÉMARRAGE DU SERVEUR
@@ -159,4 +311,6 @@ def cancel_placement():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))
+    logger.info(f"🚀 Démarrage du serveur sur le port {port}")
+    logger.info(f"📂 Dictionnaire chargé")
     app.run(host="0.0.0.0", port=port, debug=False)
