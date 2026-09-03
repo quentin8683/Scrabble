@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog
 import threading
 import time
+from functools import partial
 
 BOARD_SIZE = 15
 
@@ -10,13 +11,14 @@ BOARD_SIZE = 15
 class NetworkGame:
     def __init__(self, root, client, name):
         self.root = root
-        self.client = client  # On reçoit le client HTTP
+        self.client = client
         self.name = name
         self.player_index = client.player_index
-
         self.state = None
         self.selected_index = None
         self.alive = True
+
+        print(f"🟢 NetworkGame initialisé pour {name} (index {self.player_index})")
 
         self.create_interface()
         self.update_loop()
@@ -41,13 +43,14 @@ class NetworkGame:
         for row in range(BOARD_SIZE):
             row_cells = []
             for col in range(BOARD_SIZE):
+                # ✅ Correction : utilisation de partial pour figer row et col
                 button = tk.Button(
                     self.board_frame,
                     text="",
                     width=3,
                     height=1,
                     font=("Arial", 10, "bold"),
-                    command=lambda r=row, c=col: self.board_click(r, c)
+                    command=partial(self.board_click, row, col)
                 )
                 button.grid(row=row, column=col, padx=1, pady=1)
                 row_cells.append(button)
@@ -152,7 +155,6 @@ class NetworkGame:
         if not self.alive:
             return
 
-        # Appel toutes les 2 secondes
         self.update_state()
         self.root.after(2000, self.update_loop)
 
@@ -163,15 +165,25 @@ class NetworkGame:
                 self.status.config(text=f"⚠️ {state['error']}", fg="#ef4444")
                 return
 
+            print(f"📊 État reçu : current_player={state.get('current_player')}, mon index={self.player_index}")
+
+            # On ne réinitialise la sélection que si ce n'est plus notre tour
+            # (avant, la sélection était effacée à CHAQUE rafraîchissement,
+            # même en plein milieu de notre propre tour)
+            previous_state = self.state
+            new_current_player = state.get("current_player")
+            if previous_state is None or previous_state.get("current_player") != new_current_player:
+                self.selected_index = None
+
             self.state = state
-            self.selected_index = None
             self.update_interface()
 
         except Exception as e:
+            print(f"❌ Erreur update_state : {e}")
             self.status.config(text=f"⚠️ Erreur : {str(e)[:30]}", fg="#ef4444")
 
     # =========================================================
-    # AFFICHAGE (identique à votre version)
+    # AFFICHAGE
     # =========================================================
 
     def update_interface(self):
@@ -186,7 +198,15 @@ class NetworkGame:
                 button = self.cells[row][col]
                 value = board[row][col]
                 if value is None:
-                    button.config(text="", bg="#e5e7eb", fg="black")
+                    # Multiplicateurs
+                    multiplier = self.state.get("multiplier_grid", [[None] * BOARD_SIZE for _ in range(BOARD_SIZE)])
+                    if multiplier and multiplier[row][col]:
+                        m = multiplier[row][col]
+                        text = self.multiplier_text(m)
+                        color = self.multiplier_color(m)
+                        button.config(text=text, bg=color, fg="black")
+                    else:
+                        button.config(text="", bg="#e5e7eb", fg="black")
                 else:
                     letter = value[0] if isinstance(value, list) else value
                     button.config(text=letter, bg="#f59e0b", fg="black")
@@ -214,15 +234,19 @@ class NetworkGame:
             widget.destroy()
 
         rack = self.state.get("rack", [])
+        print(f"🃏 Chevalet : {rack}")
         for index, tile in enumerate(rack):
             display = "?" if tile == "?" else tile
+            is_selected = (index == self.selected_index)
             button = tk.Button(
                 self.rack_frame,
                 text=display,
                 width=4,
                 height=2,
                 font=("Arial", 11, "bold"),
-                command=lambda i=index: self.select_tile(i)
+                bg="#22c55e" if is_selected else "#f5f5f4",
+                relief="sunken" if is_selected else "raised",
+                command=partial(self.select_tile, index)
             )
             button.grid(row=0, column=index, padx=2)
 
@@ -233,37 +257,69 @@ class NetworkGame:
 
         # Tour du joueur
         if self.player_index == current_player:
-            self.status.config(text="À VOUS DE JOUER !", fg="#22c55e")
+            self.status.config(text="✅ À VOUS DE JOUER !", fg="#22c55e")
+            print("✅ C'est mon tour !")
         else:
-            self.status.config(text="En attente du joueur adverse…", fg="#9ca3af")
+            self.status.config(text="⏳ En attente du joueur adverse…", fg="#9ca3af")
+            print("⏳ Pas mon tour")
+
+    def multiplier_text(self, multiplier):
+        return {
+            "TW": "M×3",
+            "DW": "M×2",
+            "TL": "L×3",
+            "DL": "L×2"
+        }.get(multiplier, "")
+
+    def multiplier_color(self, multiplier):
+        return {
+            "TW": "#ef4444",
+            "DW": "#fca5a5",
+            "TL": "#3b82f6",
+            "DL": "#93c5fd"
+        }.get(multiplier, "#e5e7eb")
 
     # =========================================================
     # SÉLECTION TUILE
     # =========================================================
 
     def select_tile(self, index):
+        print(f"🖱️ Tuile sélectionnée : {index}")
         if self.state is None:
             return
         if self.player_index != self.state["current_player"]:
+            print("❌ Pas mon tour, sélection ignorée")
             return
         self.selected_index = index
+        print(f"✅ Tuile {index} sélectionnée")
+        self.update_interface()  # Rafraîchit immédiatement le surlignage
 
     # =========================================================
     # PLACER SUR LE PLATEAU
     # =========================================================
 
     def board_click(self, row, col):
+        print(f"🖱️ Clic sur le plateau : ({row}, {col})")
+
         if self.state is None:
+            print("❌ État non disponible")
             return
+
         if self.player_index != self.state["current_player"]:
+            print("❌ Pas mon tour")
             return
+
         if self.state["board"][row][col] is not None:
+            print("❌ Case occupée")
             return
+
         if self.selected_index is None:
+            print("❌ Aucune tuile sélectionnée")
             return
 
         rack = self.state.get("rack", [])
         if self.selected_index >= len(rack):
+            print("❌ Index de tuile invalide")
             return
 
         tile = rack[self.selected_index]
@@ -282,35 +338,80 @@ class NetworkGame:
                 messagebox.showerror("Joker", "Entre une seule lettre.")
                 return
 
-        self.client.place(row, col, self.selected_index, joker)
-        self.selected_index = None
+        print(f"📤 Envoi de la tuile {tile} en ({row}, {col})")
+
+        try:
+            result = self.client.place(row, col, self.selected_index, joker)
+            print(f"📥 Réponse : {result}")
+
+            if 'error' in result:
+                messagebox.showerror("Erreur", result['error'])
+            elif result.get('success') == False and result.get('error'):
+                messagebox.showerror("Erreur", result['error'])
+            else:
+                self.selected_index = None
+                print("✅ Tuile placée avec succès")
+
+        except Exception as e:
+            print(f"❌ Erreur lors du placement : {e}")
+            messagebox.showerror("Erreur", str(e))
 
     # =========================================================
     # ACTIONS
     # =========================================================
 
     def play(self):
+        print("🎮 JOUER LE MOT")
         if self.state is None:
             return
         if self.player_index != self.state["current_player"]:
             return
-        self.client.play()
+
+        try:
+            result = self.client.play()
+            print(f"📥 Réponse play : {result}")
+            if 'error' in result:
+                messagebox.showerror("Erreur", result['error'])
+            elif result.get('success') == False and result.get('error'):
+                messagebox.showerror("Erreur", result['error'])
+        except Exception as e:
+            print(f"❌ Erreur play : {e}")
+            messagebox.showerror("Erreur", str(e))
 
     def cancel(self):
+        print("❌ ANNULER")
         if self.state is None:
             return
         if self.player_index != self.state["current_player"]:
             return
-        self.client.cancel()
+
+        try:
+            result = self.client.cancel()
+            print(f"📥 Réponse cancel : {result}")
+            if 'error' in result:
+                messagebox.showerror("Erreur", result['error'])
+        except Exception as e:
+            print(f"❌ Erreur cancel : {e}")
+            messagebox.showerror("Erreur", str(e))
 
     def pass_turn(self):
+        print("⏭️ PASSER")
         if self.state is None:
             return
         if self.player_index != self.state["current_player"]:
             return
-        self.client.pass_turn()
+
+        try:
+            result = self.client.pass_turn()
+            print(f"📥 Réponse pass : {result}")
+            if 'error' in result:
+                messagebox.showerror("Erreur", result['error'])
+        except Exception as e:
+            print(f"❌ Erreur pass : {e}")
+            messagebox.showerror("Erreur", str(e))
 
     def exchange(self):
+        print("🔄 ÉCHANGER")
         if self.state is None:
             return
         if self.player_index != self.state["current_player"]:
@@ -330,11 +431,14 @@ class NetworkGame:
             messagebox.showerror("Échange", "Positions invalides.")
             return
 
-        self.client.exchange(indices)
-
-    # =========================================================
-    # FERMETURE
-    # =========================================================
+        try:
+            result = self.client.exchange(indices)
+            print(f"📥 Réponse exchange : {result}")
+            if 'error' in result:
+                messagebox.showerror("Erreur", result['error'])
+        except Exception as e:
+            print(f"❌ Erreur exchange : {e}")
+            messagebox.showerror("Erreur", str(e))
 
     def close(self):
         self.alive = False
