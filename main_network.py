@@ -17,6 +17,7 @@ class NetworkGame:
         self.state = None
         self.selected_index = None
         self.alive = True
+        self.game_started = False
 
         print(f"🟢 NetworkGame initialisé pour {name} (index {self.player_index})")
 
@@ -43,7 +44,6 @@ class NetworkGame:
         for row in range(BOARD_SIZE):
             row_cells = []
             for col in range(BOARD_SIZE):
-                # ✅ Correction : utilisation de partial pour figer row et col
                 button = tk.Button(
                     self.board_frame,
                     text="",
@@ -147,6 +147,20 @@ class NetworkGame:
         )
         self.remaining_label.pack(pady=15)
 
+        # Initialiser l'affichage en attente
+        self.show_waiting()
+
+    def show_waiting(self):
+        """Affiche l'écran d'attente"""
+        self.status.config(text="⏳ En attente du début de la partie...", fg="#fcd34d")
+        self.turn_label.config(text="")
+        self.score_label.config(text="")
+        self.remaining_label.config(text="")
+        self.play_button.config(state="disabled")
+        self.cancel_button.config(state="disabled")
+        self.pass_button.config(state="disabled")
+        self.exchange_button.config(state="disabled")
+
     # =========================================================
     # MISE À JOUR (POLLING)
     # =========================================================
@@ -165,7 +179,19 @@ class NetworkGame:
                 self.status.config(text=f"⚠️ {state['error']}", fg="#ef4444")
                 return
 
-            print(f"📊 État reçu : current_player={state.get('current_player')}, mon index={self.player_index}")
+            print(f"📊 État reçu : {state}")
+
+            # Vérifier si la partie a commencé
+            if not state.get('game_started', False) or 'board' not in state:
+                self.show_waiting()
+                self.status.config(
+                    text=f"⏳ En attente des joueurs... ({len(state.get('players', []))}/2)",
+                    fg="#fcd34d"
+                )
+                return
+
+            # Partie commencée
+            self.game_started = True
             self.state = state
             self.selected_index = None
             self.update_interface()
@@ -179,20 +205,31 @@ class NetworkGame:
     # =========================================================
 
     def update_interface(self):
-        if self.state is None:
+        if self.state is None or not self.game_started:
             return
 
-        board = self.state["board"]
+        # Activer les boutons
+        self.play_button.config(state="normal")
+        self.cancel_button.config(state="normal")
+        self.pass_button.config(state="normal")
+        self.exchange_button.config(state="normal")
+
+        board = self.state.get("board", [])
 
         # Plateau
         for row in range(BOARD_SIZE):
             for col in range(BOARD_SIZE):
                 button = self.cells[row][col]
-                value = board[row][col]
+                try:
+                    value = board[row][col]
+                except (IndexError, TypeError):
+                    button.config(text="", bg="#e5e7eb", fg="black")
+                    continue
+
                 if value is None:
                     # Multiplicateurs
-                    multiplier = self.state.get("multiplier_grid", [[None]*BOARD_SIZE for _ in range(BOARD_SIZE)])
-                    if multiplier and multiplier[row][col]:
+                    multiplier = self.state.get("multiplier_grid", None)
+                    if multiplier and row < len(multiplier) and col < len(multiplier[row]) and multiplier[row][col]:
                         m = multiplier[row][col]
                         text = self.multiplier_text(m)
                         color = self.multiplier_color(m)
@@ -208,17 +245,22 @@ class NetworkGame:
             row = pending["row"]
             col = pending["col"]
             letter = pending["letter"]
-            self.cells[row][col].config(text=letter, bg="#22c55e", fg="black")
+            if row < BOARD_SIZE and col < BOARD_SIZE:
+                self.cells[row][col].config(text=letter, bg="#22c55e", fg="black")
 
         # Tour
-        current_player = self.state["current_player"]
-        current_name = self.state["players"][current_player]["name"]
-        self.turn_label.config(text=f"Tour de {current_name}")
+        current_player = self.state.get("current_player", 0)
+        players = self.state.get("players", [])
+        if players and current_player < len(players):
+            current_name = players[current_player].get("name", "Inconnu")
+            self.turn_label.config(text=f"Tour de {current_name}")
+        else:
+            self.turn_label.config(text="")
 
         # Scores
         score_text = ""
-        for player in self.state["players"]:
-            score_text += f"{player['name']} : {player['score']}\n"
+        for player in players:
+            score_text += f"{player.get('name', '?')} : {player.get('score', 0)}\n"
         self.score_label.config(text=score_text)
 
         # Chevalet
@@ -241,7 +283,7 @@ class NetworkGame:
 
         # Informations
         self.remaining_label.config(
-            text=f"Lettres dans le sac : {self.state['remaining']}"
+            text=f"Lettres dans le sac : {self.state.get('remaining', 0)}"
         )
 
         # Tour du joueur
@@ -274,9 +316,9 @@ class NetworkGame:
 
     def select_tile(self, index):
         print(f"🖱️ Tuile sélectionnée : {index}")
-        if self.state is None:
+        if self.state is None or not self.game_started:
             return
-        if self.player_index != self.state["current_player"]:
+        if self.player_index != self.state.get("current_player", -1):
             print("❌ Pas mon tour, sélection ignorée")
             return
         self.selected_index = index
@@ -289,16 +331,20 @@ class NetworkGame:
     def board_click(self, row, col):
         print(f"🖱️ Clic sur le plateau : ({row}, {col})")
         
-        if self.state is None:
-            print("❌ État non disponible")
+        if self.state is None or not self.game_started:
+            print("❌ État non disponible ou partie pas commencée")
             return
             
-        if self.player_index != self.state["current_player"]:
+        if self.player_index != self.state.get("current_player", -1):
             print("❌ Pas mon tour")
             return
-            
-        if self.state["board"][row][col] is not None:
-            print("❌ Case occupée")
+        
+        try:
+            if self.state["board"][row][col] is not None:
+                print("❌ Case occupée")
+                return
+        except (IndexError, TypeError):
+            print("❌ Case invalide")
             return
             
         if self.selected_index is None:
@@ -350,9 +396,9 @@ class NetworkGame:
 
     def play(self):
         print("🎮 JOUER LE MOT")
-        if self.state is None:
+        if self.state is None or not self.game_started:
             return
-        if self.player_index != self.state["current_player"]:
+        if self.player_index != self.state.get("current_player", -1):
             return
         
         try:
@@ -368,9 +414,9 @@ class NetworkGame:
 
     def cancel(self):
         print("❌ ANNULER")
-        if self.state is None:
+        if self.state is None or not self.game_started:
             return
-        if self.player_index != self.state["current_player"]:
+        if self.player_index != self.state.get("current_player", -1):
             return
         
         try:
@@ -384,9 +430,9 @@ class NetworkGame:
 
     def pass_turn(self):
         print("⏭️ PASSER")
-        if self.state is None:
+        if self.state is None or not self.game_started:
             return
-        if self.player_index != self.state["current_player"]:
+        if self.player_index != self.state.get("current_player", -1):
             return
         
         try:
@@ -400,9 +446,9 @@ class NetworkGame:
 
     def exchange(self):
         print("🔄 ÉCHANGER")
-        if self.state is None:
+        if self.state is None or not self.game_started:
             return
-        if self.player_index != self.state["current_player"]:
+        if self.player_index != self.state.get("current_player", -1):
             return
 
         choice = simpledialog.askstring(
