@@ -192,6 +192,8 @@ class NetworkGame:
 
         board = self.state["board"]
 
+        tile_values = self.state.get("tile_values", {})
+
         # Plateau
         for row in range(BOARD_SIZE):
             for col in range(BOARD_SIZE):
@@ -209,14 +211,16 @@ class NetworkGame:
                         button.config(text="", bg="#e5e7eb", fg="black")
                 else:
                     letter = value[0] if isinstance(value, list) else value
-                    button.config(text=letter, bg="#f59e0b", fg="black")
+                    points = tile_values.get(letter, 0)
+                    button.config(text=f"{letter}\n{points}", bg="#f59e0b", fg="black")
 
         # Cases temporaires
         for pending in self.state.get("pending", []):
             row = pending["row"]
             col = pending["col"]
             letter = pending["letter"]
-            self.cells[row][col].config(text=letter, bg="#22c55e", fg="black")
+            points = tile_values.get(letter, 0)
+            self.cells[row][col].config(text=f"{letter}\n{points}", bg="#22c55e", fg="black")
 
         # Tour
         current_player = self.state["current_player"]
@@ -234,18 +238,49 @@ class NetworkGame:
             widget.destroy()
 
         rack = self.state.get("rack", [])
+        tile_values = self.state.get("tile_values", {})
         print(f"🃏 Chevalet : {rack}")
+
+        # Indices des tuiles déjà posées sur le plateau ce tour-ci (à griser)
+        placed_indices = {
+            p["rack_index"] for p in self.state.get("pending", [])
+            if "rack_index" in p
+        }
+
         for index, tile in enumerate(rack):
-            display = "?" if tile == "?" else tile
+            letter_display = "?" if tile == "?" else tile
+            value = tile_values.get(tile, 0)
+            display = f"{letter_display}\n{value}"
             is_selected = (index == self.selected_index)
+            is_placed = index in placed_indices
+
+            if is_placed:
+                bg_color = "#9ca3af"       # gris : déjà posée sur le plateau
+                fg_color = "#4b5563"
+                relief_style = "flat"
+                state = "disabled"
+            elif is_selected:
+                bg_color = "#22c55e"       # vert : sélectionnée
+                fg_color = "black"
+                relief_style = "sunken"
+                state = "normal"
+            else:
+                bg_color = "#f5f5f4"       # normal
+                fg_color = "black"
+                relief_style = "raised"
+                state = "normal"
+
             button = tk.Button(
                 self.rack_frame,
                 text=display,
                 width=4,
                 height=2,
                 font=("Arial", 11, "bold"),
-                bg="#22c55e" if is_selected else "#f5f5f4",
-                relief="sunken" if is_selected else "raised",
+                bg=bg_color,
+                fg=fg_color,
+                disabledforeground=fg_color,
+                relief=relief_style,
+                state=state,
                 command=partial(self.select_tile, index)
             )
             button.grid(row=0, column=index, padx=2)
