@@ -27,11 +27,13 @@ class NetworkGame:
         self.state = None
         self.selected_index = None
         self.alive = True
+        self.was_my_turn = False  # pour ne notifier qu'au moment où le tour change
 
         print(f"🟢 NetworkGame initialisé pour {name} (index {self.player_index})")
 
         self.create_interface()
         self.update_loop()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_window_close)
 
     # =========================================================
     # INTERFACE
@@ -301,12 +303,37 @@ class NetworkGame:
         )
 
         # Tour du joueur
-        if self.player_index == current_player:
+        is_my_turn = (self.player_index == current_player)
+
+        if is_my_turn and not self.was_my_turn:
+            # Le tour vient de basculer vers nous : on notifie une seule fois
+            self.notify_my_turn()
+
+        self.was_my_turn = is_my_turn
+
+        if is_my_turn:
             self.status.config(text="✅ À VOUS DE JOUER !", fg="#22c55e")
             print("✅ C'est mon tour !")
         else:
             self.status.config(text="⏳ En attente du joueur adverse…", fg="#9ca3af")
             print("⏳ Pas mon tour")
+
+    def notify_my_turn(self):
+        """Ramène la fenêtre au premier plan et affiche une pop-up quand c'est notre tour."""
+        try:
+            self.root.deiconify()          # au cas où la fenêtre serait réduite
+            self.root.lift()               # passe devant les autres fenêtres
+            self.root.attributes("-topmost", True)
+            self.root.after(300, lambda: self.root.attributes("-topmost", False))
+            self.root.bell()               # petit son système
+        except tk.TclError:
+            pass
+
+        messagebox.showinfo(
+            "À vous de jouer !",
+            "C'est votre tour sur Scrabble Réseau.",
+            parent=self.root
+        )
 
     def multiplier_text(self, multiplier):
         return {
@@ -487,3 +514,15 @@ class NetworkGame:
 
     def close(self):
         self.alive = False
+        try:
+            # Ne fonctionnera que si la partie n'a pas encore commencé côté
+            # serveur ; une fois lancée, le serveur refuse le retrait (pour
+            # ne pas casser les indices des autres joueurs), et l'erreur est
+            # ignorée ici puisqu'on ferme la fenêtre de toute façon.
+            self.client.leave()
+        except Exception:
+            pass
+
+    def on_window_close(self):
+        self.close()
+        self.root.destroy()
