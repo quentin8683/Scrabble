@@ -7,6 +7,16 @@ from functools import partial
 
 BOARD_SIZE = 15
 
+# Table de conversion pour afficher les points en petits chiffres ("en indice"),
+# comme le petit nombre dans le coin d'une vraie tuile de Scrabble.
+_SUBSCRIPT_DIGITS = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+
+
+def format_tile(letter, points):
+    """Formate le texte d'une tuile : lettre au-dessus, points en petit en dessous."""
+    small_points = str(points).translate(_SUBSCRIPT_DIGITS)
+    return f"{letter}\n{small_points}"
+
 
 class NetworkGame:
     def __init__(self, root, client, name):
@@ -48,8 +58,8 @@ class NetworkGame:
                     self.board_frame,
                     text="",
                     width=3,
-                    height=1,
-                    font=("Arial", 10, "bold"),
+                    height=2,
+                    font=("Arial", 9, "bold"),
                     command=partial(self.board_click, row, col)
                 )
                 button.grid(row=row, column=col, padx=1, pady=1)
@@ -212,7 +222,7 @@ class NetworkGame:
                 else:
                     letter = value[0] if isinstance(value, list) else value
                     points = tile_values.get(letter, 0)
-                    button.config(text=f"{letter}\n{points}", bg="#f59e0b", fg="black")
+                    button.config(text=format_tile(letter, points), bg="#f59e0b", fg="black")
 
         # Cases temporaires
         for pending in self.state.get("pending", []):
@@ -220,7 +230,7 @@ class NetworkGame:
             col = pending["col"]
             letter = pending["letter"]
             points = tile_values.get(letter, 0)
-            self.cells[row][col].config(text=f"{letter}\n{points}", bg="#22c55e", fg="black")
+            self.cells[row][col].config(text=format_tile(letter, points), bg="#22c55e", fg="black")
 
         # Tour
         current_player = self.state["current_player"]
@@ -250,7 +260,7 @@ class NetworkGame:
         for index, tile in enumerate(rack):
             letter_display = "?" if tile == "?" else tile
             value = tile_values.get(tile, 0)
-            display = f"{letter_display}\n{value}"
+            display = format_tile(letter_display, value)
             is_selected = (index == self.selected_index)
             is_placed = index in placed_indices
 
