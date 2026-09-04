@@ -30,6 +30,17 @@ class ScrabbleClient:
             response = requests.request(method, url, verify=False, timeout=60, **kwargs)
 
             if response.status_code != 200:
+                # Le serveur renvoie souvent un JSON détaillé même en cas
+                # d'erreur (ex: 400 pour un mot invalide), avec l'explication
+                # précise dans "error". On essaie de le lire avant d'abandonner.
+                content = response.text.strip()
+                if content.startswith(('{', '[')):
+                    try:
+                        data = response.json()
+                        if isinstance(data, dict) and data.get('error'):
+                            return data
+                    except ValueError:
+                        pass
                 return {"error": f"HTTP {response.status_code}"}
 
             content = response.text.strip()
