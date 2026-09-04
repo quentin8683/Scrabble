@@ -126,6 +126,14 @@ class ScrabbleClient:
             "player_index": self.player_index
         })
 
+    def leave(self):
+        """Prévient le serveur qu'on quitte (appelé à la fermeture de la fenêtre)."""
+        if self.player_index is None:
+            return {"error": "Pas de joueur connecté"}
+        return self._safe_request('POST', '/leave', json={
+            "player_index": self.player_index
+        })
+
 
 # ============================================================
 # ÉCRAN D'ATTENTE POUR RENDER
@@ -195,6 +203,17 @@ class WaitingScreen:
 
         self.check_state()
         self.auto_check()
+
+        # Prévenir le serveur si l'utilisateur ferme la fenêtre pendant l'attente
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def on_close(self):
+        self.running = False
+        try:
+            self.client.leave()
+        except Exception:
+            pass  # best-effort : on ferme la fenêtre même si l'appel échoue
+        self.root.destroy()
 
     def auto_check(self):
         if not self.running:
