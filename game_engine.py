@@ -1,3 +1,15 @@
+"""
+Moteur de jeu Scrabble — version "headless" (sans interface graphique).
+
+Ce fichier remplace une ancienne version couplée à Tkinter (fenêtre,
+simpledialog, messagebox), incompatible avec un serveur Flask sans
+affichage. La logique de jeu (plateau, scoring, dictionnaire, règles
+de placement) est conservée à l'identique ; seule l'interface change :
+au lieu de dessiner des boutons et d'attendre des clics, chaque action
+est une méthode appelée par le serveur avec un `player_index`, qui
+renvoie (succès: bool, message/erreur: str).
+"""
+
 from board import Board, BOARD_SIZE
 from player import Player
 from tiles import TileBag, TILE_VALUES
@@ -5,124 +17,96 @@ from dictionary import dictionary
 
 
 class ScrabbleGame:
-    """
-    Version serveur de ScrabbleGame - Sans interface graphique
-    Uniquement la logique métier
-    """
 
-    def __init__(self, players):
-        """
-        Initialise le jeu avec une liste de joueurs
-        
-        Args:
-            players (list): Liste des noms des joueurs
-        """
-        self.number_of_players = len(players)
-        
+    def __init__(self, player_names):
         self.board = Board()
         self.tile_bag = TileBag()
-        
-        # Créer les objets Player
-        self.players = [
-            Player(name) 
-            for name in players
-        ]
-        
+
+        self.players = [Player(name) for name in player_names]
+        self.number_of_players = len(self.players)
+
         self.current_player = 0
-        self.pending = []  # Tuiles posées temporairement
+
+        # Tuiles posées pendant le tour actuel (avant validation par /play)
+        self.pending = []
+
+        # Nombre de passes successives (pour détecter la fin de partie)
         self.consecutive_passes = 0
-        self.selected_index = None
-        
-        # Distribuer les tuiles
+
+        self.game_over = False
+        self.final_ranking = None
+
+        self.distribute_tiles()
+
+    # =========================================================
+    # DISTRIBUTION
+    # =========================================================
+
+    def distribute_tiles(self):
         for player in self.players:
             player.rack = self.tile_bag.draw_multiple(7)
 
-    # ============================================================
-    # ACCÈS À L'ÉTAT
-    # ============================================================
+    def refill(self, player):
+        while len(player.rack) < 7:
+            tile = self.tile_bag.draw()
+            if tile is None:
+                break
+            player.rack.append(tile)
+
+    # =========================================================
+    # ÉTAT (pour l'API /state)
+    # =========================================================
+
+    def _board_grid(self):
+        return [
+            [self.board.get(r, c) for c in range(BOARD_SIZE)]
+            for r in range(BOARD_SIZE)
+        ]
+
+    def _multiplier_grid(self):
+        return [
+            [self.board.multiplier_at(r, c) for c in range(BOARD_SIZE)]
+            for r in range(BOARD_SIZE)
+        ]
 
     def private_state(self, player_index):
-        """
-        Retourne l'état du jeu pour un joueur spécifique
-        """
+        """État du jeu du point de vue d'un joueur donné (son propre chevalet)."""
+        if player_index is None or not (0 <= player_index < len(self.players)):
+            return {"error": "Index de joueur invalide"}
+
+        player = self.players[player_index]
+
         return {
-            "board": self.board.grid,
-            "used_multipliers": [
-                list(position) 
-                for position in self.board.used_multipliers
-            ],
+            "board": self._board_grid(),
+            "multiplier_grid": self._multiplier_grid(),
             "players": [
-                {
-                    "name": player.name,
-                    "score": player.score,
-                    "rack_count": len(player.rack)
-                }
-                for player in self.players
+                {"name": p.name, "score": p.score}
+                for p in self.players
             ],
             "current_player": self.current_player,
-            "remaining": self.tile_bag.remaining(),
+            "rack": player.rack,
             "pending": [
-                {
-                    "row": p["row"],
-                    "col": p["col"],
-                    "letter": p["letter"]
-                }
+                {"row": p["row"], "col": p["col"], "letter": p["letter"]}
                 for p in self.pending
             ],
-            "rack": list(self.players[player_index].rack)
+            "remaining": self.tile_bag.remaining(),
+            "game_over": self.game_over,
+            "final_ranking": self.final_ranking,
         }
 
-    # ============================================================
-    # LETTRES / MOTS
-    # ============================================================
-
-    def get_letter(self, row, col):
-        for p in self.pending:
-            if p["row"] == row and p["col"] == col:
-                return p["letter"]
-        
-        value = self.board.get(row, col)
-        if value is None:
-            return None
-        if isinstance(value, tuple):
-            return value[0]
-        return value
-
-    def build_word(self, row, col, dr, dc):
-        r, c = row, col
-        
-        while (self.board.inside(r - dr, c - dc) and 
-               self.get_letter(r - dr, c - dc) is not None):
-            r -= dr
-            c -= dc
-        
-        letters = []
-        positions = []
-        
-        while self.board.inside(r, c):
-            letter = self.get_letter(r, c)
-            if letter is None:
-                break
-            letters.append(letter)
-            positions.append((r, c))
-            r += dr
-            c += dc
-        
-        return "".join(letters), positions
-
-    # ============================================================
+    # =========================================================
     # VALIDATION DU PLACEMENT
-    # ============================================================
+    # =========================================================
 
     def validate_placement(self):
         if not self.pending:
             return False, "Aucune lettre posée."
-        
+
         positions = [(p["row"], p["col"]) for p in self.pending]
-        
-        # Une seule lettre
+
         if len(positions) == 1:
             r, c = positions[0]
+
             if self.board.is_empty():
                 if (r, c) != (7, 7):
                     return False, "Le premier mot doit passer par le centre."
@@ -133,35 +117,34 @@ class ScrabbleGame:
                 )
                 if not connected:
                     return False, "Le mot doit être relié au plateau."
+
             return True, ""
-        
+
         rows = {p[0] for p in positions}
         cols = {p[1] for p in positions}
-        
+
         if len(rows) != 1 and len(cols) != 1:
             return False, "Les lettres doivent être alignées."
-        
+
         horizontal = len(rows) == 1
-        
+
         if horizontal:
             row = next(iter(rows))
-            sorted_positions = sorted(positions, key=lambda p: p[1])
-            start = sorted_positions[0][1]
-            end = sorted_positions[-1][1]
-            
+            positions_sorted = sorted(positions, key=lambda p: p[1])
+            start, end = positions_sorted[0][1], positions_sorted[-1][1]
+
             for col in range(start, end + 1):
                 if self.board.get(row, col) is None and (row, col) not in positions:
                     return False, "Le mot ne peut pas contenir de trou."
         else:
             col = next(iter(cols))
-            sorted_positions = sorted(positions, key=lambda p: p[0])
-            start = sorted_positions[0][0]
-            end = sorted_positions[-1][0]
-            
+            positions_sorted = sorted(positions, key=lambda p: p[0])
+            start, end = positions_sorted[0][0], positions_sorted[-1][0]
+
             for row in range(start, end + 1):
                 if self.board.get(row, col) is None and (row, col) not in positions:
                     return False, "Le mot ne peut pas contenir de trou."
-        
+
         if self.board.is_empty():
             if (7, 7) not in positions:
                 return False, "Le premier mot doit passer par la case centrale."
@@ -174,58 +157,95 @@ class ScrabbleGame:
                         break
                 if connected:
                     break
+
             if not connected:
                 return False, "Le nouveau mot doit être connecté au plateau."
-        
+
         return True, ""
 
-    # ============================================================
-    # DETECTION DES MOTS
-    # ============================================================
+    # =========================================================
+    # CONSTRUCTION DES MOTS
+    # =========================================================
+
+    def get_letter(self, row, col):
+        for p in self.pending:
+            if p["row"] == row and p["col"] == col:
+                return p["letter"]
+
+        value = self.board.get(row, col)
+        if value is None:
+            return None
+        if isinstance(value, tuple):
+            return value[0]
+        return value
+
+    def build_word(self, row, col, dr, dc):
+        r, c = row, col
+
+        while (
+            self.board.inside(r - dr, c - dc)
+            and self.get_letter(r - dr, c - dc) is not None
+        ):
+            r -= dr
+            c -= dc
+
+        letters = []
+        positions = []
+
+        while self.board.inside(r, c):
+            letter = self.get_letter(r, c)
+            if letter is None:
+                break
+            letters.append(letter)
+            positions.append((r, c))
+            r += dr
+            c += dc
+
+        return "".join(letters), positions
 
     def find_words(self):
         words = []
-        seen = set()
-        
+
         for p in self.pending:
             r, c = p["row"], p["col"]
-            
-            # Horizontal
+
             word, positions = self.build_word(r, c, 0, 1)
             if len(word) >= 2:
-                key = ("horizontal", tuple(positions))
-                if key not in seen:
-                    seen.add(key)
-                    words.append(("horizontal", word, positions))
-            
-            # Vertical
+                words.append(("horizontal", word, positions))
+
             word, positions = self.build_word(r, c, 1, 0)
             if len(word) >= 2:
-                key = ("vertical", tuple(positions))
-                if key not in seen:
-                    seen.add(key)
-                    words.append(("vertical", word, positions))
-        
-        return words
+                words.append(("vertical", word, positions))
 
-    # ============================================================
+        unique = []
+        seen = set()
+        for direction, word, positions in words:
+            key = (direction, tuple(positions))
+            if key not in seen:
+                seen.add(key)
+                unique.append((direction, word, positions))
+
+        return unique
+
+    # =========================================================
     # SCORE
-    # ============================================================
+    # =========================================================
 
     def score_word(self, word, positions):
         total = 0
         word_multiplier = 1
-        
+
         for letter, (r, c) in zip(word, positions):
             value = TILE_VALUES.get(letter, 0)
-            
+
             pending_tile = next(
                 (p for p in self.pending if p["row"] == r and p["col"] == c),
                 None
             )
-            
+
             if pending_tile is not None:
                 multiplier = self.board.multiplier_at(r, c)
+
                 if multiplier == "DL":
                     value *= 2
                 elif multiplier == "TL":
@@ -234,200 +254,211 @@ class ScrabbleGame:
                     word_multiplier *= 2
                 elif multiplier == "TW":
                     word_multiplier *= 3
+
                 if pending_tile["tile"] == "?":
                     value = 0
-            
+
             total += value
-        
+
         return total * word_multiplier
 
-    # ============================================================
-    # ACTIONS DU JOUEUR
-    # ============================================================
+    # =========================================================
+    # ACTIONS (appelées par le serveur avec un player_index)
+    # =========================================================
 
     def place(self, player_index, row, col, rack_index, joker_letter=None):
-        # Vérification du tour
+        if self.game_over:
+            return False, "La partie est terminée."
+
         if player_index != self.current_player:
             return False, "Ce n'est pas votre tour."
-        
-        # Vérification de la case
-        if not self.board.inside(row, col):
-            return False, "Case invalide."
-        
+
+        if row is None or col is None or rack_index is None:
+            return False, "Paramètres de placement invalides."
+
+        if not (0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE):
+            return False, "Case hors du plateau."
+
         if self.board.get(row, col) is not None:
-            return False, "Cette case est déjà occupée."
-        
-        # Vérification doublon temporaire
-        for p in self.pending:
-            if p["row"] == row and p["col"] == col:
-                return False, "Cette case est déjà sélectionnée."
-        
+            return False, "Case déjà occupée."
+
+        if any(p["row"] == row and p["col"] == col for p in self.pending):
+            return False, "Case déjà utilisée ce tour-ci."
+
         player = self.players[player_index]
-        
-        # Vérification du chevalet
+
         if rack_index < 0 or rack_index >= len(player.rack):
             return False, "Tuile invalide."
-        
+
+        if any(p["rack_index"] == rack_index for p in self.pending):
+            return False, "Cette tuile est déjà posée ce tour-ci."
+
         tile = player.rack[rack_index]
-        
-        # Joker
+
         if tile == "?":
-            if not joker_letter or len(joker_letter) != 1 or not joker_letter.isalpha():
-                return False, "Le joker doit représenter une lettre."
-            letter = joker_letter.upper()
+            if not joker_letter:
+                return False, "Le joker nécessite une lettre."
+            joker_letter = str(joker_letter).strip().upper()
+            if len(joker_letter) != 1 or not joker_letter.isalpha():
+                return False, "Lettre de joker invalide."
+            placed_letter = joker_letter
         else:
-            letter = tile
-        
-        # Placement temporaire
+            placed_letter = tile
+
         self.pending.append({
             "row": row,
             "col": col,
-            "letter": letter,
+            "letter": placed_letter,
             "tile": tile,
             "rack_index": rack_index
         })
-        
-        return True, ""
+
+        return True, "Lettre placée."
 
     def cancel(self, player_index):
         if player_index != self.current_player:
             return False, "Ce n'est pas votre tour."
-        
+
         self.pending.clear()
-        return True, ""
+        return True, "Placement annulé."
 
     def play(self, player_index):
+        if self.game_over:
+            return False, "La partie est terminée."
+
         if player_index != self.current_player:
             return False, "Ce n'est pas votre tour."
-        
-        # Validation
+
         valid, error = self.validate_placement()
         if not valid:
             return False, error
-        
-        # Recherche des mots
+
         words = self.find_words()
         if not words:
             return False, "Aucun mot valide n'a été créé."
-        
-        # Vérification dictionnaire
+
         for _, word, _ in words:
             if word not in dictionary:
                 return False, f"« {word} » n'est pas autorisé."
-        
-        # Calcul du score
+
+        # Calcul des scores AVANT de vider self.pending
+        # (score_word a besoin de self.pending pour les bonus/jokers)
+        word_scores = []
         total_score = 0
         for _, word, positions in words:
-            total_score += self.score_word(word, positions)
-        
-        # Scrabble
+            score = self.score_word(word, positions)
+            word_scores.append((word, score))
+            total_score += score
+
         if len(self.pending) == 7:
             total_score += 50
-        
+
         player = self.players[player_index]
-        
-        # Validation définitive
+
         positions = []
         for p in self.pending:
             self.board.set(p["row"], p["col"], p["letter"])
             positions.append((p["row"], p["col"]))
-        
+
         self.board.consume_multipliers(positions)
-        
-        # Retirer les tuiles du chevalet
+
         for p in sorted(self.pending, key=lambda x: x["rack_index"], reverse=True):
-            player.rack.pop(p["rack_index"])
-        
+            index = p["rack_index"]
+            if index < len(player.rack):
+                player.rack.pop(index)
+
         player.add_score(total_score)
         self.pending.clear()
-        
-        # Remplir le chevalet
-        while len(player.rack) < 7:
-            tile = self.tile_bag.draw()
-            if tile is None:
-                break
-            player.rack.append(tile)
-        
+        self.refill(player)
         self.consecutive_passes = 0
-        
-        result = {
-            "score": total_score,
-            "words": [word for _, word, _ in words]
-        }
-        
-        # Fin de partie
+
+        word_list = "\n".join(f"{word} : {score} pts" for word, score in word_scores)
+        message = f"{word_list}\nTOTAL : +{total_score} points"
+
         if len(player.rack) == 0 and self.tile_bag.remaining() == 0:
-            result["game_over"] = self.finish()
-            return True, result
-        
+            self._end_game()
+            return True, f"{message}\n\n{self.final_ranking}"
+
         self.next_turn()
-        return True, result
+        return True, message
 
     def pass_turn(self, player_index):
+        if self.game_over:
+            return False, "La partie est terminée."
+
         if player_index != self.current_player:
             return False, "Ce n'est pas votre tour."
-        
-        self.pending.clear()
+
+        if self.pending:
+            self.pending.clear()
+
         self.consecutive_passes += 1
-        
-        if self.consecutive_passes >= len(self.players) * 2:
-            return True, {"game_over": self.finish()}
-        
+
+        # Règle simplifiée : deux tours par joueur sans jouer -> fin de partie
+        if self.consecutive_passes >= (self.number_of_players * 2):
+            self._end_game()
+            return True, self.final_ranking
+
         self.next_turn()
-        return True, {}
+        return True, "Tour passé."
 
     def exchange(self, player_index, indices):
+        if self.game_over:
+            return False, "La partie est terminée."
+
         if player_index != self.current_player:
             return False, "Ce n'est pas votre tour."
-        
+
         if self.pending:
-            return False, "Annulez d'abord votre placement."
-        
+            return False, "Annule d'abord ton placement en cours."
+
+        if self.tile_bag.remaining() < 1:
+            return False, "Le sac est vide."
+
         if not indices:
-            return False, "Aucune tuile sélectionnée."
-        
-        if self.tile_bag.remaining() < len(indices):
-            return False, "Pas assez de lettres dans le sac."
-        
+            return False, "Aucune position fournie."
+
+        try:
+            indices = sorted({int(i) for i in indices}, reverse=True)
+        except (TypeError, ValueError):
+            return False, "Positions invalides."
+
         player = self.players[player_index]
-        
-        indices = sorted(set(indices), reverse=True)
-        
+
         if any(i < 0 or i >= len(player.rack) for i in indices):
-            return False, "Position de tuile invalide."
-        
-        old_tiles = [player.rack[i] for i in indices]
-        
-        for index in indices:
-            player.rack.pop(index)
-        
+            return False, "Une position est invalide."
+
+        if len(indices) > self.tile_bag.remaining():
+            return False, "Pas assez de lettres dans le sac."
+
+        old_tiles = [player.rack.pop(i) for i in indices]
         new_tiles = self.tile_bag.draw_multiple(len(old_tiles))
         player.rack.extend(new_tiles)
         self.tile_bag.put_back(old_tiles)
-        
+
         self.consecutive_passes = 0
         self.next_turn()
-        
-        return True, {}
+        return True, "Lettres échangées."
+
+    # =========================================================
+    # TOUR SUIVANT / FIN DE PARTIE
+    # =========================================================
 
     def next_turn(self):
         self.current_player += 1
-        if self.current_player >= len(self.players):
+        if self.current_player >= self.number_of_players:
             self.current_player = 0
 
-    def finish(self):
-        # Retirer les points des lettres restantes
+    def _end_game(self):
         for player in self.players:
-            penalty = sum(TILE_VALUES[tile] for tile in player.rack)
+            penalty = sum(TILE_VALUES.get(tile, 0) for tile in player.rack)
             player.score -= penalty
-        
-        ranking = sorted(
-            [
-                {"name": player.name, "score": player.score}
-                for player in self.players
-            ],
-            key=lambda p: p["score"],
-            reverse=True
-        )
-        
-        return ranking
+
+        ranking = sorted(self.players, key=lambda p: p.score, reverse=True)
+
+        lines = ["FIN DE PARTIE", ""]
+        for i, player in enumerate(ranking):
+            lines.append(f"{i + 1}. {player.name} : {player.score} points")
+
+        self.game_over = True
+        self.final_ranking = "\n".join(lines)
