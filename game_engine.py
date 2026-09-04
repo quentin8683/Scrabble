@@ -85,8 +85,14 @@ class ScrabbleGame:
             ],
             "current_player": self.current_player,
             "rack": player.rack,
+            "tile_values": TILE_VALUES,
             "pending": [
-                {"row": p["row"], "col": p["col"], "letter": p["letter"]}
+                {
+                    "row": p["row"],
+                    "col": p["col"],
+                    "letter": p["letter"],
+                    "rack_index": p["rack_index"]
+                }
                 for p in self.pending
             ],
             "remaining": self.tile_bag.remaining(),
