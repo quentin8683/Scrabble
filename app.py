@@ -29,9 +29,14 @@ CORS(app)  # Permet aux clients de se connecter depuis n'importe où
 # ============================================================
 
 engine = None
-players = []
+players = []  # Chaque entrée est un nom (str), ou None si le joueur est parti
 game_started = False
 target_max_players = None  # Défini par le premier joueur qui rejoint (l'hôte)
+
+
+def active_players():
+    """Liste des joueurs encore présents (ignore les emplacements libérés)."""
+    return [p for p in players if p is not None]
 
 
 # ============================================================
@@ -43,8 +48,8 @@ def home():
     """Page d'accueil / statut du serveur"""
     return jsonify({
         "status": "Scrabble Server is running!",
-        "players": players,
-        "players_count": len(players),
+        "players": active_players(),
+        "players_count": len(active_players()),
         "game_started": game_started,
         "max_players": target_max_players or 4,
         "configured": target_max_players is not None
@@ -56,12 +61,68 @@ def get_status():
     """Retourne l'état détaillé du serveur"""
     return jsonify({
         "game_started": game_started,
-        "players_count": len(players),
-        "players": players,
+        "players_count": len(active_players()),
+        "players": active_players(),
         "max_players": target_max_players or 4,
         "configured": target_max_players is not None,
         "engine_initialized": engine is not None
     })
+
+
+@app.route('/leave', methods=['POST'])
+def leave_game():
+    """Un joueur quitte la partie (fermeture de la fenêtre)."""
+    global players, game_started, target_max_players
+
+    try:
+        data = request.get_json()
+        if data is None:
+            return jsonify({"error": "JSON attendu"}), 400
+
+        player_index = data.get('player_index')
+        if (
+            player_index is None
+            or not (0 <= player_index < len(players))
+            or players[player_index] is None
+        ):
+            return jsonify({"error": "Index de joueur invalide"}), 400
+
+        if game_started:
+            # On ne peut pas retirer un joueur en cours de partie sans
+            # décaler tous les player_index et casser le moteur de jeu.
+            logger.warning(
+                f"⚠️ {players[player_index]} a fermé sa fenêtre en cours de partie "
+                f"(index {player_index}) — non retiré pour ne pas casser la partie."
+            )
+            return jsonify({
+                "success": False,
+                "error": "La partie est déjà commencée : ce joueur ne peut pas être "
+                         "retiré proprement. Utilisez /reset si la partie doit être "
+                         "annulée."
+            }), 400
+
+        # Partie pas encore commencée : on libère l'emplacement (on ne fait
+        # PAS de pop(), pour ne pas décaler les player_index des joueurs
+        # déjà connectés à des indices supérieurs).
+        removed_name = players[player_index]
+        players[player_index] = None
+        logger.info(f"👋 {removed_name} a quitté la salle d'attente (slot {player_index} libéré)")
+
+        if not active_players():
+            # Plus personne en attente : on réinitialise complètement
+            players = []
+            target_max_players = None
+            logger.info("🔄 Salle d'attente vide, configuration réinitialisée")
+
+        return jsonify({
+            "success": True,
+            "message": f"{removed_name} a quitté la partie.",
+            "players_count": len(active_players())
+        })
+
+    except Exception as e:
+        logger.error(f"❌ Erreur dans /leave : {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/reset', methods=['POST'])
@@ -108,42 +169,51 @@ def join_game():
             logger.info(f"🎯 Partie configurée pour {target_max_players} joueurs par {name}")
 
         logger.info(f"📥 Tentative de connexion : {name}")
-        logger.info(f"   État actuel : {len(players)} joueurs, game_started={game_started}, cible={target_max_players}")
+        logger.info(f"   État actuel : {len(active_players())} joueurs, game_started={game_started}, cible={target_max_players}")
 
-        # Vérifier si la partie est pleine
-        if len(players) >= target_max_players:
-            logger.warning(f"❌ Partie pleine : {len(players)}/{target_max_players} joueurs")
+        # Vérifier si la partie est pleine (on ne compte que les joueurs actifs)
+        if len(active_players()) >= target_max_players:
+            logger.warning(f"❌ Partie pleine : {len(active_players())}/{target_max_players} joueurs")
             return jsonify({"error": f"Partie complète ({target_max_players} joueurs maximum)"}), 400
 
-        # Vérifier si le nom existe déjà
-        if name in players:
+        # Vérifier si le nom existe déjà (parmi les joueurs actifs)
+        if name in active_players():
             logger.warning(f"❌ Nom déjà pris : {name}")
             return jsonify({"error": f"Le nom '{name}' est déjà utilisé."}), 400
 
-        # Ajouter le joueur
-        player_index = len(players)
-        players.append(name)
+        # Ajouter le joueur : on réutilise un emplacement libéré (None) s'il y
+        # en a un, plutôt que d'ajouter systématiquement à la fin. Cela évite
+        # de décaler les player_index des autres joueurs déjà connectés.
+        if None in players:
+            player_index = players.index(None)
+            players[player_index] = name
+        else:
+            player_index = len(players)
+            players.append(name)
         logger.info(f"✅ Joueur ajouté : {name} (index {player_index})")
 
         # Démarrer la partie uniquement quand le nombre de joueurs voulu est atteint
-        if len(players) >= target_max_players and not game_started:
+        if len(active_players()) >= target_max_players and not game_started:
             try:
-                engine = GameEngine(players)
+                # players[:target_max_players] ne contient plus aucun None à
+                # cet instant précis, puisque c'est justement le dernier
+                # emplacement qui vient d'être comblé.
+                engine = GameEngine(players[:target_max_players])
                 game_started = True
-                logger.info(f"🎮 Partie démarrée avec {len(players)} joueurs : {players}")
+                logger.info(f"🎮 Partie démarrée avec {len(active_players())} joueurs : {active_players()}")
             except Exception as e:
                 logger.error(f"❌ Erreur lors du démarrage du jeu : {e}")
                 # Annuler l'ajout du joueur en cas d'erreur
-                players.pop()
+                players[player_index] = None
                 return jsonify({"error": f"Erreur de démarrage : {str(e)}"}), 500
 
         return jsonify({
             "player_index": player_index,
             "game_started": game_started,
-            "players_count": len(players),
+            "players_count": len(active_players()),
             "max_players": target_max_players,
             "message": f"Bienvenue {name} !",
-            "waiting": len(players) < target_max_players
+            "waiting": len(active_players()) < target_max_players
         })
 
     except Exception as e:
@@ -161,13 +231,13 @@ def get_state():
             return jsonify({
                 "game_started": False,
                 "waiting": True,
-                "players_count": len(players),
+                "players_count": len(active_players()),
                 "message": "En attente d'autres joueurs..."
             })
 
         state = engine.private_state(player_index)
         state["game_started"] = True
-        state["players_count"] = len(players)
+        state["players_count"] = len(active_players())
         return jsonify(state)
 
     except Exception as e:
